@@ -1628,7 +1628,7 @@ function Posiciones({ standings, courses, parByCourse, courseRuleByName, roundsI
   }
 
   function valueFor(s, key) {
-    if (key === "total") return s.total;
+    if (key === "total") return s.roundsCount > 0 ? s.total : null;
     const d = s.courseData[key];
     return d ? d.subtotal : null;
   }
@@ -1707,7 +1707,9 @@ function Posiciones({ standings, courses, parByCourse, courseRuleByName, roundsI
                     </td>
                   );
                 })}
-                <td style={{ ...tdStyle, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: COLORS.green700 }}>{s.total}</td>
+                <td style={{ ...tdStyle, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: s.roundsCount > 0 ? COLORS.green700 : COLORS.ink }}>
+                  {s.roundsCount > 0 ? s.total : <span style={{ opacity: 0.25 }}>—</span>}
+                </td>
               </tr>
             ))}
           </tbody>
