@@ -493,7 +493,9 @@ function GolfLeagueInner() {
     const freshConfig = (await storageGet("config")) || config;
     const next = { ...freshConfig, adminPinHash: hash, adminName: (adminName || "").trim() };
     setConfig(next);
-    await storageSet("config", next);
+    const saved = await storageSetVerified("config", next);
+    if (!saved) return { ok: false, msg: "No se pudo guardar. Revisá tu conexión y probá de nuevo." };
+    return { ok: true };
   }
 
   async function verifyAdminPin(pin) {
@@ -1043,8 +1045,9 @@ function GolfLeagueInner() {
           hasAdminPin={!!config.adminPinHash}
           authed={adminAuthed}
           onSetupPin={async (pin, adminName) => {
-            await setupAdminPin(pin, adminName);
-            setAdminAuthed(true);
+            const res = await setupAdminPin(pin, adminName);
+            if (res.ok) setAdminAuthed(true);
+            return res;
           }}
           onVerifyPin={async (pin) => {
             const ok = await verifyAdminPin(pin);
@@ -2302,7 +2305,8 @@ function AdminGate({ hasAdminPin, authed, onSetupPin, onVerifyPin, onClose, chil
     if (pin !== pinConfirm) return setError("Los PIN no coinciden.");
     setBusy(true);
     try {
-      await onSetupPin(pin, adminName);
+      const res = await onSetupPin(pin, adminName);
+      if (!res.ok) setError(res.msg || "No se pudo configurar el PIN. Probá de nuevo.");
     } catch (e) {
       setError("No se pudo configurar el PIN. Probá de nuevo.");
     } finally {
