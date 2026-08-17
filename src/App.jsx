@@ -321,6 +321,12 @@ function GolfLeagueInner() {
   const pendingUsers = useMemo(() => users.filter((u) => u.status === "pendiente"), [users]);
   const approvedNames = useMemo(() => approvedUsers.map((u) => u.name), [approvedUsers]);
 
+  const pendingParticipantsCount = useMemo(
+    () => tournaments.reduce((acc, t) => acc + (t.participants || []).filter((p) => p.status === "pendiente").length, 0),
+    [tournaments]
+  );
+  const totalPendingCount = pendingUsers.length + pendingParticipantsCount;
+
   const acceptedParticipantUsers = useMemo(() => {
     if (!activeTournamentObj) return [];
     const acceptedNames = (activeTournamentObj.participants || [])
@@ -981,6 +987,7 @@ function GolfLeagueInner() {
         tournament={tournament}
         setTournament={setTournament}
         enabledTournaments={enabledTournaments}
+        pendingCount={totalPendingCount}
       />
 
       <div style={{ maxWidth: 720, margin: "0 auto", width: "100%", flex: 1, padding: "0 20px 60px" }}>
@@ -1133,7 +1140,7 @@ export default function GolfLeague() {
   );
 }
 
-function Header({ onAdmin, onRegister, tournament, setTournament, enabledTournaments }) {
+function Header({ onAdmin, onRegister, tournament, setTournament, enabledTournaments, pendingCount }) {
   return (
     <div
       style={{
@@ -1163,14 +1170,30 @@ function Header({ onAdmin, onRegister, tournament, setTournament, enabledTournam
             <button
               onClick={onAdmin}
               className="glBtn"
-              aria-label="Administrar"
+              aria-label={pendingCount > 0 ? `Administrar — ${pendingCount} solicitud(es) pendiente(s)` : "Administrar"}
               style={{
+                position: "relative",
                 background: "transparent", border: `1px solid rgba(200,167,107,0.4)`, borderRadius: 8,
                 width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center",
                 color: COLORS.brassLight, cursor: "pointer",
               }}
             >
               <Settings size={17} />
+              {pendingCount > 0 && (
+                <span
+                  title={`${pendingCount} solicitud(es) pendiente(s)`}
+                  style={{
+                    position: "absolute", top: -6, right: -6,
+                    minWidth: 18, height: 18, padding: "0 4px",
+                    borderRadius: 9, background: "#C0392B", color: "#fff",
+                    fontSize: 10.5, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    border: `2px solid ${COLORS.green900}`, lineHeight: 1,
+                  }}
+                >
+                  {pendingCount > 9 ? "9+" : pendingCount}
+                </span>
+              )}
             </button>
             <button
               onClick={onRegister}
