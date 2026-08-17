@@ -238,7 +238,7 @@ function GolfLeagueInner() {
   const [tournaments, setTournaments] = useState([]); // [{name, enabled}]
   const [rounds, setRounds] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("cargar");
+  const [tab, setTab] = useState("posiciones");
   const [tournament, setTournament] = useState("");
   const [showAdmin, setShowAdmin] = useState(false);
   const [adminAuthed, setAdminAuthed] = useState(false);
@@ -1215,10 +1215,10 @@ function Header({ onAdmin, onRegister, tournament, setTournament, enabledTournam
 
 function Tabs({ tab, setTab }) {
   const items = [
-    { id: "cargar", label: "Cargar" },
     { id: "posiciones", label: "Posiciones" },
     { id: "historial", label: "Historial" },
     { id: "estadisticas", label: "Estadísticas" },
+    { id: "cargar", label: "Cargar" },
   ];
   return (
     <div style={{ display: "flex", gap: 4, marginTop: 24, marginBottom: 20, borderBottom: `1px solid rgba(255,255,255,0.1)`, overflowX: "auto" }}>
