@@ -679,6 +679,9 @@ function GolfLeagueInner() {
     if (matchingController && matchingController.name === round.player) {
       return { ok: false, msg: "No podés verificar tu propia tarjeta." };
     }
+    if (isAdmin && freshConfig.adminName && freshConfig.adminName === round.player) {
+      return { ok: false, msg: "No podés verificar tu propia tarjeta (sos el administrador de este torneo)." };
+    }
 
     const verifierName = matchingController ? matchingController.name : "Administrador";
     const next = freshRounds.map((r) => (r.id === roundId ? { ...r, verified: true, verifiedBy: verifierName } : r));
@@ -710,6 +713,9 @@ function GolfLeagueInner() {
     }
     if (matchingController && matchingController.name === round.player) {
       return { ok: false, msg: "No podés editar tu propia tarjeta." };
+    }
+    if (isAdmin && freshConfig.adminName && freshConfig.adminName === round.player) {
+      return { ok: false, msg: "No podés editar tu propia tarjeta (sos el administrador de este torneo)." };
     }
 
     const editorName = matchingController ? matchingController.name : "Administrador";
