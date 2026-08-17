@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Flag, Trophy, PlusCircle, Trash2, Settings, ChevronRight, Loader2,
-  Camera, X, ImageOff, Lock, UserPlus, Check, Ban, KeyRound, Plus, RefreshCw, Pencil,
+  Camera, X, ImageOff, Lock, UserPlus, Check, Ban, KeyRound, Plus, RefreshCw, Pencil, Wallet,
 } from "lucide-react";
 
 const FONT_LINK_ID = "golf-league-fonts";
@@ -237,10 +237,13 @@ function GolfLeagueInner() {
   const [courses, setCourses] = useState([]);
   const [tournaments, setTournaments] = useState([]); // [{name, enabled}]
   const [rounds, setRounds] = useState([]);
+  const [tesoreria, setTesoreria] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("posiciones");
   const [tournament, setTournament] = useState("");
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showTreasury, setShowTreasury] = useState(false);
+  const [treasuryAuthed, setTreasuryAuthed] = useState(false);
   const [adminAuthed, setAdminAuthed] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
   const [toast, setToast] = useState(null);
@@ -252,13 +255,14 @@ function GolfLeagueInner() {
   }, []);
 
   const loadAllData = useCallback(async () => {
-    const [u, cfg, c, t, r, legacyPlayers] = await Promise.all([
+    const [u, cfg, c, t, r, legacyPlayers, tes] = await Promise.all([
       storageGet("users"),
       storageGet("config"),
       storageGet("courses"),
       storageGet("tournaments"),
       storageGet("rounds"),
       storageGet("players"),
+      storageGet("tesoreria"),
     ]);
 
     let finalUsers = u;
@@ -275,6 +279,7 @@ function GolfLeagueInner() {
     setConfig(cfg || {});
     setCourses(c || []);
     setTournaments(t || []);
+    setTesoreria(tes || []);
 
     // migración: las rondas viejas usaban "season" (semestre fijo) en vez de "tournament"
     const migrated = (r || []).map((rd) => {
@@ -758,6 +763,55 @@ function GolfLeagueInner() {
     }
   }
 
+  // ---- Tesorería (admin + controllers de cualquier torneo) ----
+  async function verifyTreasuryAccess(pin) {
+    const hash = await sha256(pin);
+    const freshConfig = (await storageGet("config")) || config;
+    if (freshConfig.adminPinHash && hash === freshConfig.adminPinHash) return true;
+
+    const freshUsers = (await storageGet("users")) || users;
+    const freshTournaments = (await storageGet("tournaments")) || tournaments;
+    const allControllerNames = new Set();
+    freshTournaments.forEach((t) => (t.controllers || []).forEach((c) => allControllerNames.add(c)));
+    const match = freshUsers.find((u) => allControllerNames.has(u.name) && u.pinHash === hash);
+    return !!match;
+  }
+
+  async function addTreasuryMovement(entry) {
+    const fresh = (await storageGet("tesoreria")) || tesoreria;
+    const record = { ...entry, id: uid() };
+    const next = [...fresh, record];
+    setTesoreria(next);
+    const saved = await storageSetVerified("tesoreria", next);
+    if (!saved) return { ok: false, msg: "No se pudo guardar. Probá de nuevo." };
+    showToast(entry.type === "ingreso" ? "Ingreso registrado" : "Egreso registrado");
+    return { ok: true };
+  }
+
+  async function removeTreasuryMovement(id) {
+    const fresh = (await storageGet("tesoreria")) || tesoreria;
+    const next = fresh.filter((m) => m.id !== id);
+    setTesoreria(next);
+    await storageSet("tesoreria", next);
+    showToast("Movimiento eliminado");
+  }
+
+  function exportTreasuryCSV() {
+    const header = ["Fecha", "Tipo", "Categoría", "Concepto", "Monto", "Registrado por"];
+    const rows = [
+      header,
+      ...[...tesoreria].sort((a, b) => (a.date < b.date ? 1 : -1)).map((m) => [
+        formatDate(m.date),
+        m.type === "ingreso" ? "Ingreso" : "Egreso",
+        m.category,
+        m.concept,
+        m.amount,
+        m.registeredBy || "",
+      ]),
+    ];
+    downloadCSV("tesoreria_los_optimistas.csv", rows);
+  }
+
   function exportHistorialCSV() {
     const header = ["Jugador", "Cancha", "Fecha", "Score", "Handicap", "Verificada", "Verificada por", "Suma al total ahora"];
     const rows = [
@@ -984,6 +1038,7 @@ function GolfLeagueInner() {
       <Header
         onAdmin={() => setShowAdmin(true)}
         onRegister={() => setShowRegister(true)}
+        onTreasury={() => setShowTreasury(true)}
         tournament={tournament}
         setTournament={setTournament}
         enabledTournaments={enabledTournaments}
@@ -1106,6 +1161,32 @@ function GolfLeagueInner() {
         </AdminGate>
       )}
 
+      {showTreasury && (
+        <TreasuryGate
+          authed={treasuryAuthed}
+          onVerifyPin={async (pin) => {
+            const ok = await verifyTreasuryAccess(pin);
+            if (ok) setTreasuryAuthed(true);
+            return ok;
+          }}
+          onClose={() => {
+            setShowTreasury(false);
+            setTreasuryAuthed(false);
+          }}
+        >
+          <TreasuryPanel
+            movements={tesoreria}
+            onAdd={addTreasuryMovement}
+            onRemove={removeTreasuryMovement}
+            onExport={exportTreasuryCSV}
+            onClose={() => {
+              setShowTreasury(false);
+              setTreasuryAuthed(false);
+            }}
+          />
+        </TreasuryGate>
+      )}
+
       {showRegister && (
         <RegisterModal
           onRegister={registerUser}
@@ -1140,7 +1221,7 @@ export default function GolfLeague() {
   );
 }
 
-function Header({ onAdmin, onRegister, tournament, setTournament, enabledTournaments, pendingCount }) {
+function Header({ onAdmin, onRegister, onTreasury, tournament, setTournament, enabledTournaments, pendingCount }) {
   return (
     <div
       style={{
@@ -1194,6 +1275,19 @@ function Header({ onAdmin, onRegister, tournament, setTournament, enabledTournam
                   {pendingCount > 9 ? "9+" : pendingCount}
                 </span>
               )}
+            </button>
+            <button
+              onClick={onTreasury}
+              className="glBtn"
+              aria-label="Tesorería"
+              title="Tesorería (admin y controllers)"
+              style={{
+                background: "transparent", border: `1px solid rgba(200,167,107,0.4)`, borderRadius: 8,
+                width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center",
+                color: COLORS.brassLight, cursor: "pointer",
+              }}
+            >
+              <Wallet size={17} />
             </button>
             <button
               onClick={onRegister}
@@ -2315,6 +2409,233 @@ function Estadisticas({ rounds, courses, parByCourse, tournament }) {
         )}
       </Card>
     </>
+  );
+}
+
+function TreasuryGate({ authed, onVerifyPin, onClose, children }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (authed) return children;
+
+  async function handleLogin() {
+    setError("");
+    if (!/^\d{4}$/.test(pin)) return setError("Ingresá el PIN de 4 dígitos.");
+    setBusy(true);
+    const ok = await onVerifyPin(pin);
+    setBusy(false);
+    if (!ok) return setError("PIN incorrecto — tiene que ser el del administrador o el de un controller de algún torneo.");
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: COLORS.paper, color: COLORS.ink, width: "100%", maxWidth: 420, borderRadius: "16px 16px 0 0", padding: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <Wallet size={20} color={COLORS.brass} />
+          <h2 style={{ fontFamily: "'Fraunces', serif", fontSize: 20, margin: 0 }}>Tesorería</h2>
+        </div>
+        <p style={{ fontSize: 12.5, color: "rgba(27,36,32,0.6)", margin: "4px 0 16px" }}>
+          Acceso restringido: administrador o controller de cualquier torneo.
+        </p>
+        <input
+          type="password" inputMode="numeric" maxLength={4} value={pin}
+          onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
+          placeholder="PIN"
+          style={{ ...inputStyle, marginBottom: 10 }}
+        />
+        {error && <p style={{ color: COLORS.danger, fontSize: 12.5, margin: "0 0 10px" }}>{error}</p>}
+        <button className="glBtn" onClick={handleLogin} disabled={busy} style={{ width: "100%", background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 8, padding: "12px 0", fontWeight: 600, cursor: "pointer" }}>
+          Entrar
+        </button>
+        <button onClick={onClose} style={{ marginTop: 10, width: "100%", background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "10px 0", fontWeight: 600, cursor: "pointer" }}>
+          Cerrar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const TREASURY_CATEGORIES = {
+  ingreso: ["Cuota", "Aporte extra", "Otro"],
+  egreso: ["Cancha", "Torneo", "Evento", "Otro"],
+};
+
+function TreasuryPanel({ movements, onAdd, onRemove, onExport, onClose }) {
+  const [type, setType] = useState("ingreso");
+  const [date, setDate] = useState(todayStr());
+  const [concept, setConcept] = useState("");
+  const [category, setCategory] = useState(TREASURY_CATEGORIES.ingreso[0]);
+  const [amount, setAmount] = useState("");
+  const [registeredBy, setRegisteredBy] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(null);
+
+  const totalIngresos = movements.filter((m) => m.type === "ingreso").reduce((a, m) => a + Number(m.amount || 0), 0);
+  const totalEgresos = movements.filter((m) => m.type === "egreso").reduce((a, m) => a + Number(m.amount || 0), 0);
+  const saldo = totalIngresos - totalEgresos;
+  const sorted = [...movements].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  function fmtMoney(n) {
+    return "$" + Number(n || 0).toLocaleString("es-AR");
+  }
+
+  function handleTypeChange(t) {
+    setType(t);
+    setCategory(TREASURY_CATEGORIES[t][0]);
+  }
+
+  async function handleAdd() {
+    setError("");
+    if (!concept.trim()) return setError("Ingresá un concepto.");
+    const amountNum = Number(amount);
+    if (!amount || isNaN(amountNum) || amountNum <= 0) return setError("Ingresá un monto válido.");
+    if (!registeredBy.trim()) return setError("Ingresá tu nombre (quién registra el movimiento).");
+    setBusy(true);
+    const res = await onAdd({ type, date, concept: concept.trim(), category, amount: amountNum, registeredBy: registeredBy.trim() });
+    setBusy(false);
+    if (!res.ok) return setError(res.msg);
+    setConcept("");
+    setAmount("");
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: COLORS.paper, color: COLORS.ink, width: "100%", maxWidth: 480, borderRadius: "16px 16px 0 0", padding: 22, maxHeight: "88vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+          <Wallet size={20} color={COLORS.brass} />
+          <h2 style={{ fontFamily: "'Fraunces', serif", fontSize: 20, margin: 0 }}>Tesorería</h2>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+          <div style={{ flex: 1, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Ingresos</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.green700 }}>{fmtMoney(totalIngresos)}</div>
+          </div>
+          <div style={{ flex: 1, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Egresos</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.danger }}>{fmtMoney(totalEgresos)}</div>
+          </div>
+          <div style={{ flex: 1, background: COLORS.green700, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.paper, fontFamily: "'IBM Plex Mono', monospace" }}>Saldo</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.paper }}>{fmtMoney(saldo)}</div>
+          </div>
+        </div>
+
+        <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: "0 0 10px" }}>Registrar movimiento</h3>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <button
+            onClick={() => handleTypeChange("ingreso")}
+            style={{
+              flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13,
+              border: type === "ingreso" ? "none" : `1px solid ${COLORS.paperDim}`,
+              background: type === "ingreso" ? COLORS.green700 : "none",
+              color: type === "ingreso" ? COLORS.paper : COLORS.ink,
+            }}
+          >
+            Ingreso
+          </button>
+          <button
+            onClick={() => handleTypeChange("egreso")}
+            style={{
+              flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13,
+              border: type === "egreso" ? "none" : `1px solid ${COLORS.paperDim}`,
+              background: type === "egreso" ? COLORS.danger : "none",
+              color: type === "egreso" ? COLORS.paper : COLORS.ink,
+            }}
+          >
+            Egreso
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 130 }}>
+            <FieldLabel style={{ marginBottom: 4 }}>Fecha</FieldLabel>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+          </div>
+          <div style={{ flex: 1, minWidth: 130 }}>
+            <FieldLabel style={{ marginBottom: 4 }}>Categoría</FieldLabel>
+            <Select value={category} onChange={setCategory}>
+              {TREASURY_CATEGORIES[type].map((c) => <option key={c} value={c}>{c}</option>)}
+            </Select>
+          </div>
+        </div>
+
+        <FieldLabel style={{ marginBottom: 4 }}>Concepto</FieldLabel>
+        <input value={concept} onChange={(e) => setConcept(e.target.value)} placeholder="Ej: cuota agosto, alquiler cancha Norte..." style={{ ...inputStyle, marginBottom: 10 }} />
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 100 }}>
+            <FieldLabel style={{ marginBottom: 4 }}>Monto</FieldLabel>
+            <input type="number" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" style={inputStyle} />
+          </div>
+          <div style={{ flex: 1, minWidth: 140 }}>
+            <FieldLabel style={{ marginBottom: 4 }}>Registrado por (vos)</FieldLabel>
+            <input value={registeredBy} onChange={(e) => setRegisteredBy(e.target.value)} placeholder="Tu nombre" style={inputStyle} />
+          </div>
+        </div>
+
+        {error && <p style={{ color: COLORS.danger, fontSize: 12.5, margin: "0 0 10px" }}>{error}</p>}
+        <button className="glBtn" onClick={handleAdd} disabled={busy} style={{ width: "100%", background: COLORS.brass, color: COLORS.green900, border: "none", borderRadius: 8, padding: "12px 0", fontWeight: 700, cursor: "pointer", marginBottom: 18 }}>
+          Registrar {type === "ingreso" ? "ingreso" : "egreso"}
+        </button>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: 0 }}>Movimientos ({movements.length})</h3>
+          <button onClick={onExport} style={{ background: "none", border: `1px solid ${COLORS.green700}`, color: COLORS.green700, borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>
+            Exportar CSV
+          </button>
+        </div>
+
+        {sorted.length === 0 ? (
+          <p style={{ fontSize: 13, opacity: 0.6 }}>Todavía no hay movimientos cargados.</p>
+        ) : (
+          <div>
+            {sorted.map((m, idx) => (
+              <div key={m.id} style={{ borderBottom: idx < sorted.length - 1 ? `1px solid ${COLORS.paperDim}` : "none", padding: "10px 0" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{m.concept}</div>
+                    <div style={{ fontSize: 11.5, opacity: 0.6 }}>
+                      {formatDate(m.date)} · {m.category} · {m.registeredBy}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color: m.type === "ingreso" ? COLORS.green700 : COLORS.danger }}>
+                      {m.type === "ingreso" ? "+" : "−"}{fmtMoney(m.amount)}
+                    </div>
+                    <button onClick={() => setDeleting(deleting === m.id ? null : m.id)} style={{ background: "none", border: "none", color: "rgba(140,59,46,0.7)", cursor: "pointer" }}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                {deleting === m.id && (
+                  <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() => { onRemove(m.id); setDeleting(null); }}
+                      style={{ flex: 1, background: COLORS.danger, color: "#fff", border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                    >
+                      Confirmar borrado
+                    </button>
+                    <button
+                      onClick={() => setDeleting(null)}
+                      style={{ flex: 1, background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 6, padding: "7px 0", fontSize: 12, cursor: "pointer" }}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button onClick={onClose} style={{ marginTop: 18, width: "100%", background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "10px 0", fontWeight: 600, cursor: "pointer" }}>
+          Cerrar
+        </button>
+      </div>
+    </div>
   );
 }
 
