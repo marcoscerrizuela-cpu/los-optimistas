@@ -386,18 +386,24 @@ function GolfLeagueInner() {
     return counting;
   }, [roundsInTournament, courseNames, courseRuleByName]);
 
+  const acceptedParticipantNames = useMemo(
+    () => acceptedParticipantUsers.map((u) => u.name),
+    [acceptedParticipantUsers]
+  );
+
   const verifiedStatusByPlayer = useMemo(() => {
     const map = {};
-    for (const player of approvedNames) {
+    for (const player of acceptedParticipantNames) {
       const theirCounting = roundsInTournament.filter((r) => r.player === player && countingRoundIds.has(r.id));
       map[player] = theirCounting.length > 0 && theirCounting.every((r) => r.verified);
     }
     return map;
-  }, [approvedNames, roundsInTournament, countingRoundIds]);
+  }, [acceptedParticipantNames, roundsInTournament, countingRoundIds]);
 
   const standings = useMemo(() => {
     const byPlayer = {};
-    for (const name of approvedNames) byPlayer[name] = { player: name, courseData: {}, total: 0, roundsCount: 0 };
+    // arrancan TODOS los aceptados al torneo, aunque todavía no hayan cargado ninguna tarjeta
+    for (const name of acceptedParticipantNames) byPlayer[name] = { player: name, courseData: {}, total: 0, roundsCount: 0 };
 
     for (const course of courseNames) {
       const rule = courseRuleByName[course];
@@ -427,10 +433,17 @@ function GolfLeagueInner() {
     }
 
     return Object.values(byPlayer)
-      .filter((p) => p.roundsCount > 0)
-      .map((p) => ({ ...p, eligible: Object.values(p.courseData).every((d) => d.complete) }))
-      .sort((a, b) => a.total - b.total);
-  }, [approvedNames, roundsInTournament, courseNames, courseRuleByName]);
+      .map((p) => ({ ...p, eligible: p.roundsCount > 0 && Object.values(p.courseData).every((d) => d.complete) }))
+      .sort((a, b) => {
+        // quien no presentó ninguna tarjeta nunca puede figurar antes ni en mejor
+        // posición que alguien que sí jugó, sea cual sea el total (que empieza en 0)
+        const aPlayed = a.roundsCount > 0;
+        const bPlayed = b.roundsCount > 0;
+        if (aPlayed !== bPlayed) return aPlayed ? -1 : 1;
+        if (aPlayed) return a.total - b.total;
+        return a.player.localeCompare(b.player);
+      });
+  }, [acceptedParticipantNames, roundsInTournament, courseNames, courseRuleByName]);
 
   // ---- Usuarios ----
   async function registerUser(name, pin) {
@@ -872,104 +885,6 @@ function GolfLeagueInner() {
     return { ok: true };
   }
 
-  async function seedTestData() {
-    let TEST_TOURNAMENT = "Torneo de Prueba";
-    let suffix = 1;
-    while (tournaments.some((t) => t.name === TEST_TOURNAMENT)) {
-      suffix += 1;
-      TEST_TOURNAMENT = `Torneo de Prueba ${suffix}`;
-    }
-
-    const testCourseDefs = [
-      { name: "Cancha Norte", par: 72 },
-      { name: "Cancha Sur", par: 71 },
-      { name: "Cancha Este", par: 70 },
-      { name: "Cancha Oeste", par: 73 },
-    ];
-    const nextCourses = [...courses];
-    for (const c of testCourseDefs) {
-      if (!nextCourses.some((x) => x.name === c.name)) nextCourses.push(c);
-    }
-    setCourses(nextCourses);
-    await storageSet("courses", nextCourses);
-
-    const playerNames = [
-      "Jugador 1", "Jugador 2", "Jugador 3", "Jugador 4", "Jugador 5", "Jugador 6",
-      "Jugador 7", "Jugador 8", "Jugador 9", "Jugador 10", "Jugador 11", "Jugador 12",
-    ];
-    const testPins = [
-      "1111", "2222", "3333", "4444", "5555", "6666",
-      "7777", "8888", "9999", "1212", "1313", "1414",
-    ];
-    const nextUsers = [...users];
-    for (let i = 0; i < playerNames.length; i++) {
-      const p = playerNames[i];
-      if (!nextUsers.some((u) => u.name === p)) {
-        const pinHash = await sha256(testPins[i]);
-        nextUsers.push({ name: p, pinHash, status: "aprobado" });
-      }
-    }
-    setUsers(nextUsers);
-    await storageSet("users", nextUsers);
-
-    const start = new Date();
-    start.setDate(start.getDate() - 30);
-    const startDate = start.toISOString().slice(0, 10);
-    const endDate = todayStr();
-
-    const controllers = [playerNames[0], playerNames[1]];
-    const participants = playerNames.map((p) => ({ name: p, status: "aceptado" }));
-    const courseConfig = testCourseDefs.map((cd) => ({ course: cd.name, minRequired: 2, mode: "suma" }));
-    const newTournament = { name: TEST_TOURNAMENT, startDate, endDate, enabled: true, controllers, participants, courseConfig };
-    const nextTournaments = [...tournaments, newTournament];
-    setTournaments(nextTournaments);
-    await storageSet("tournaments", nextTournaments);
-
-    function randomDateBetween(a, b) {
-      const t = new Date(a).getTime() + Math.random() * (new Date(b).getTime() - new Date(a).getTime());
-      return new Date(t).toISOString().slice(0, 10);
-    }
-
-    const newRounds = [];
-    for (const player of playerNames) {
-      for (const courseDef of testCourseDefs) {
-        for (let i = 0; i < 7; i++) {
-          const score = 68 + Math.floor(Math.random() * 28); // 68 a 95
-          const handicap = Math.round((Math.random() * 24) * 10) / 10; // 0.0 a 24.0
-          const date = randomDateBetween(startDate, endDate);
-          const id = uid();
-          // marcamos como verificadas de manera aleatoria (~40%), siempre por un controller distinto al dueño
-          let verified = false;
-          let verifiedBy = null;
-          if (Math.random() < 0.4) {
-            const verifier = controllers.find((c) => c !== player) || null;
-            if (verifier) {
-              verified = true;
-              verifiedBy = verifier;
-            }
-          }
-          newRounds.push({
-            id,
-            player,
-            course: courseDef.name,
-            score,
-            handicap,
-            date,
-            tournament: TEST_TOURNAMENT,
-            hasPhoto: false,
-            verified,
-            verifiedBy,
-          });
-        }
-      }
-    }
-    const nextRounds = [...rounds, ...newRounds];
-    setRounds(nextRounds);
-    await storageSet("rounds", nextRounds);
-
-    setTournament(TEST_TOURNAMENT);
-    showToast(`Datos de prueba cargados: 4 canchas, 12 jugadores, 336 tarjetas (7 por cancha c/u) en "${TEST_TOURNAMENT}"`, 6000);
-  }
 
   async function performDeleteRound(id) {
     const round = rounds.find((r) => r.id === id);
@@ -983,10 +898,9 @@ function GolfLeagueInner() {
     const round = rounds.find((r) => r.id === id);
     if (!round) return false;
     const hash = await sha256(pin);
-    const owner = users.find((u) => u.name === round.player);
-    const okOwner = owner && owner.pinHash && hash === owner.pinHash;
-    const okAdmin = config.adminPinHash && hash === config.adminPinHash;
-    if (!okOwner && !okAdmin) return false;
+    const freshConfig = (await storageGet("config")) || config;
+    const okAdmin = freshConfig.adminPinHash && hash === freshConfig.adminPinHash;
+    if (!okAdmin) return false;
     await performDeleteRound(id);
     return true;
   }
@@ -1147,7 +1061,6 @@ function GolfLeagueInner() {
             onEditTournamentDates={editTournamentDates}
             onApproveParticipant={approveParticipant}
             onRejectParticipant={rejectParticipant}
-            onSeedTestData={seedTestData}
             onResetAllData={resetAllData}
             onRefreshData={refreshData}
             onExportHistorial={exportHistorialCSV}
@@ -1894,14 +1807,6 @@ function Posiciones({ standings, courses, parByCourse, courseRuleByName, roundsI
           </tbody>
         </table>
       </div>
-      <div style={{ padding: "10px 16px", fontSize: 11.5, color: "rgba(27,36,32,0.55)", lineHeight: 1.5 }}>
-        Cada cancha tiene su propia regla (mínimo de tarjetas y si suma las mejores o toma solo la mejor),
-        definida al crear el torneo — mirá el encabezado de cada columna. * = todavía no llegó al mínimo
-        exigido en esa cancha. ⚠ junto al nombre = no cumple el mínimo en al menos una cancha jugada.
-        ✅ junto al nombre = todas las tarjetas que le suman ahora mismo fueron verificadas por un controller o el administrador.
-        Tocá el encabezado de cualquier columna para ordenar ascendente/descendente por esa cancha o por el total.
-        Tocá cualquier número de la tabla para ver el detalle de las tarjetas que lo componen.
-      </div>
     </Card>
 
     {detail && (
@@ -1932,6 +1837,18 @@ function Posiciones({ standings, courses, parByCourse, courseRuleByName, roundsI
           <span style={{ fontWeight: 700, color: COLORS.green700 }}>Administrador: </span>
           {adminName || "sin nombre configurado"}
         </div>
+      </div>
+    </Card>
+
+    <Card style={{ marginTop: 12, padding: "14px 16px" }}>
+      <div style={{ fontSize: 11.5, color: "rgba(27,36,32,0.55)", lineHeight: 1.5 }}>
+        Cada cancha tiene su propia regla (mínimo de tarjetas y si suma las mejores o toma solo la mejor),
+        definida al crear el torneo — mirá el encabezado de cada columna. * = todavía no llegó al mínimo
+        exigido en esa cancha. ⚠ junto al nombre = no cumple el mínimo en al menos una cancha jugada, o
+        todavía no cargó ninguna tarjeta. ✅ junto al nombre = todas las tarjetas que le suman ahora mismo
+        fueron verificadas por un controller o el administrador. Tocá el encabezado de cualquier columna
+        para ordenar ascendente/descendente por esa cancha o por el total. Tocá cualquier número de la
+        tabla para ver el detalle de las tarjetas que lo componen.
       </div>
     </Card>
     </>
@@ -2176,7 +2093,7 @@ function RoundRow({ round, isLast, onRequestDelete, onViewPhoto, onVerifyRound, 
     const ok = await onRequestDelete(round.id, pin);
     setBusy(false);
     if (!ok) {
-      setError("PIN incorrecto (ni el del jugador ni el de admin).");
+      setError("PIN de administrador incorrecto.");
       return;
     }
   }
@@ -2260,7 +2177,7 @@ function RoundRow({ round, isLast, onRequestDelete, onViewPhoto, onVerifyRound, 
           <input
             type="password" inputMode="numeric" maxLength={4} value={pin}
             onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
-            placeholder="PIN (tuyo o de admin)"
+            placeholder="PIN de administrador"
             style={{ ...inputStyle, width: 160 }}
           />
           <button className="glBtn" onClick={confirmDelete} disabled={busy} style={{ background: COLORS.danger, color: COLORS.paper, border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
@@ -2390,17 +2307,23 @@ function Estadisticas({ rounds, courses, parByCourse, tournament }) {
                     {course}
                     {parByCourse[course] ? <span style={{ opacity: 0.5, fontWeight: 400 }}> · par {parByCourse[course]}</span> : null}
                   </div>
-                  {best ? (
-                    <div style={{ fontSize: 12.5, color: "rgba(27,36,32,0.6)", marginTop: 2 }}>
-                      {best.player}{best.handicap != null ? ` · hcp ${best.handicap}` : ""}
-                    </div>
-                  ) : (
+                  {!best && (
                     <div style={{ fontSize: 12.5, color: "rgba(27,36,32,0.4)", marginTop: 2 }}>Sin tarjetas cargadas</div>
                   )}
                 </div>
                 {best && (
-                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 18, color: COLORS.green700 }}>
-                    {best.score}
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, justifyContent: "flex-end" }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 18, color: COLORS.ink }}>
+                        {best.player}
+                      </span>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 18, color: COLORS.green700 }}>
+                        {best.score}
+                      </span>
+                    </div>
+                    {best.handicap != null && (
+                      <div style={{ fontSize: 11, color: "rgba(27,36,32,0.5)", marginTop: 2 }}>hcp {best.handicap}</div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2725,7 +2648,7 @@ function AdminPanel({
   onApprove, onReject, onRemoveUser, onSetUserPin,
   onAddUserDirect, onAddCourse, onRemoveCourse, onEditCoursePar,
   onAddTournament, onToggleTournament, onRemoveTournament, onEditTournamentDates,
-  onApproveParticipant, onRejectParticipant, onSeedTestData, onResetAllData, onRefreshData,
+  onApproveParticipant, onRejectParticipant, onResetAllData, onRefreshData,
   onExportHistorial, onExportPosiciones, activeTournamentName, onClose,
 }) {
   const [name, setName] = useState("");
@@ -3227,19 +3150,6 @@ function AdminPanel({
             ))}
           </div>
         )}
-
-        <div style={{ marginTop: 24, paddingTop: 16, borderTop: `1px dashed ${COLORS.paperDim}` }}>
-          <p style={{ fontSize: 11.5, color: "rgba(27,36,32,0.5)", margin: "0 0 8px" }}>
-            Utilidad de prueba — genera 4 canchas, 12 jugadores (PIN 1111, 2222... hasta 1414) y 336 tarjetas
-            (7 por jugador en cada cancha) en un "Torneo de Prueba" para ver la app funcionando con datos.
-          </p>
-          <button
-            onClick={onSeedTestData}
-            style={{ width: "100%", background: "none", border: `1px dashed ${COLORS.brass}`, color: COLORS.brass, borderRadius: 8, padding: "10px 0", fontWeight: 600, cursor: "pointer", fontSize: 13 }}
-          >
-            Cargar datos de prueba
-          </button>
-        </div>
 
         <div style={{ marginTop: 24, paddingTop: 16, borderTop: `1px dashed ${COLORS.paperDim}` }}>
           <h2 style={{ fontFamily: "'Fraunces', serif", fontSize: 18, margin: "0 0 6px" }}>Exportar datos</h2>
