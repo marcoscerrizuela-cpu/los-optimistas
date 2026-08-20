@@ -830,22 +830,63 @@ function GolfLeagueInner() {
       return { ok: false, msg: "No hay jugadores aceptados en este torneo para generarles la cuota." };
     }
     const fresh = (await storageGet("tesoreria")) || tesoreria;
+    const conceptTrim = concept.trim();
+    const conceptKey = conceptTrim.toLowerCase();
+
+    // A quien ya tenía una cuota con este MISMO concepto en este torneo se le
+    // actualiza el monto/fecha en el lugar — no se le duplica. Solo se crea un
+    // registro nuevo para quien todavía no la tenía. Esto es lo que permite volver
+    // a tocar "Generar cuota" cuando se suma gente nueva, sin recobrarle a los que
+    // ya estaban.
+    const alreadyHave = new Set(
+      fresh
+        .filter(
+          (m) =>
+            m.type === "cuota" &&
+            m.tournament === tournament &&
+            (m.concept || "").trim().toLowerCase() === conceptKey &&
+            memberNames.includes(m.member)
+        )
+        .map((m) => m.member)
+    );
+
+    const updated = fresh.map((m) => {
+      const isMatch =
+        m.type === "cuota" &&
+        m.tournament === tournament &&
+        (m.concept || "").trim().toLowerCase() === conceptKey &&
+        memberNames.includes(m.member);
+      return isMatch ? { ...m, amount, date } : m;
+    });
+
+    const newMembers = memberNames.filter((n) => !alreadyHave.has(n));
     const batchId = uid();
-    const newRecords = memberNames.map((member) => ({
+    const newRecords = newMembers.map((member) => ({
       id: uid(),
       tournament,
       type: "cuota",
       batchId,
       member,
-      concept,
+      concept: conceptTrim,
       amount,
       date,
     }));
-    const next = [...fresh, ...newRecords];
+
+    const next = [...updated, ...newRecords];
     setTesoreria(next);
     const saved = await storageSetVerifiedByIds("tesoreria", next);
     if (!saved) return { ok: false, msg: "No se pudo generar la cuota. Probá de nuevo." };
-    showToast(`Cuota "${concept}" generada para ${memberNames.length} jugador(es)`);
+
+    const updatedCount = memberNames.length - newMembers.length;
+    let msg;
+    if (newMembers.length > 0 && updatedCount > 0) {
+      msg = `Cuota "${conceptTrim}": ${newMembers.length} jugador(es) nuevo(s), ${updatedCount} actualizada(s) (sin duplicar)`;
+    } else if (newMembers.length > 0) {
+      msg = `Cuota "${conceptTrim}" generada para ${newMembers.length} jugador(es)`;
+    } else {
+      msg = `Cuota "${conceptTrim}" actualizada para ${updatedCount} jugador(es) que ya la tenían`;
+    }
+    showToast(msg, 4500);
     return { ok: true };
   }
 
@@ -875,6 +916,47 @@ function GolfLeagueInner() {
     setTesoreria(next);
     await storageSet("tesoreria", next);
     showToast("Cuota masiva eliminada por completo");
+  }
+
+  // Detecta cuotas duplicadas dentro del torneo activo: mismo jugador + mismo
+  // concepto (sin importar mayúsculas/espacios), más de una vez. Solo lee, no
+  // borra nada — sirve para mostrarle al tesorero qué se va a fusionar antes de
+  // que confirme.
+  function findDuplicateCuotas() {
+    const inTournament = tesoreria.filter((m) => m.type === "cuota" && m.tournament === tournament);
+    const groups = {};
+    for (const m of inTournament) {
+      const key = `${m.member}|||${(m.concept || "").trim().toLowerCase()}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(m);
+    }
+    return Object.values(groups).filter((g) => g.length > 1);
+  }
+
+  // Para cada grupo duplicado, se queda con la fila de fecha más reciente (o la
+  // primera si empatan) y borra el resto. No toca cobranzas ni egresos, solo cuotas.
+  async function mergeDuplicateCuotas() {
+    const fresh = (await storageGet("tesoreria")) || tesoreria;
+    const inTournament = fresh.filter((m) => m.type === "cuota" && m.tournament === tournament);
+    const groups = {};
+    for (const m of inTournament) {
+      const key = `${m.member}|||${(m.concept || "").trim().toLowerCase()}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(m);
+    }
+    const idsToRemove = new Set();
+    for (const group of Object.values(groups)) {
+      if (group.length <= 1) continue;
+      const sorted = [...group].sort((a, b) => (a.date < b.date ? 1 : -1));
+      for (const m of sorted.slice(1)) idsToRemove.add(m.id);
+    }
+    if (idsToRemove.size === 0) return { ok: true, removed: 0 };
+    const next = fresh.filter((m) => !idsToRemove.has(m.id));
+    setTesoreria(next);
+    const saved = await storageSetVerifiedByIds("tesoreria", next);
+    if (!saved) return { ok: false, msg: "No se pudo fusionar. Probá de nuevo." };
+    showToast(`Se fusionaron duplicados: ${idsToRemove.size} fila(s) eliminada(s)`, 5000);
+    return { ok: true, removed: idsToRemove.size };
   }
 
   const tesoreriaInTournament = useMemo(
@@ -1178,6 +1260,8 @@ function GolfLeagueInner() {
             onEdit={editTreasuryMovement}
             onRemove={removeTreasuryMovement}
             onRemoveBatch={removeTreasuryBatch}
+            onFindDuplicates={findDuplicateCuotas}
+            onMergeDuplicates={mergeDuplicateCuotas}
             onExport={exportTreasuryCSV}
             onClose={() => {
               setShowTreasury(false);
@@ -2642,7 +2726,7 @@ function generateMovementsPDF(tournament, type, movements) {
   doc.save(fileName);
 }
 
-function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGenerateCuota, onEdit, onRemove, onRemoveBatch, onExport, onClose }) {
+function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGenerateCuota, onEdit, onRemove, onRemoveBatch, onFindDuplicates, onMergeDuplicates, onExport, onClose }) {
   const [subTab, setSubTab] = useState("situacion");
   const [historialInitialFilter, setHistorialInitialFilter] = useState("");
 
@@ -2776,10 +2860,94 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
           />
         )}
 
+        <DuplicateCuotasSection onFindDuplicates={onFindDuplicates} onMergeDuplicates={onMergeDuplicates} />
+
         <button onClick={onClose} style={{ marginTop: 18, width: "100%", background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "10px 0", fontWeight: 600, cursor: "pointer" }}>
           Cerrar
         </button>
       </div>
+    </div>
+  );
+}
+
+function DuplicateCuotasSection({ onFindDuplicates, onMergeDuplicates }) {
+  const [duplicates, setDuplicates] = useState(null); // null = no revisado todavía
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  function handleCheck() {
+    setDuplicates(onFindDuplicates());
+    setConfirming(false);
+  }
+
+  async function handleMerge() {
+    setBusy(true);
+    await onMergeDuplicates();
+    setBusy(false);
+    setDuplicates(onFindDuplicates());
+    setConfirming(false);
+  }
+
+  const totalDuplicateRows = duplicates ? duplicates.reduce((a, g) => a + (g.length - 1), 0) : 0;
+
+  return (
+    <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px dashed ${COLORS.paperDim}` }}>
+      <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 14, margin: "0 0 6px" }}>Mantenimiento</h3>
+      <p style={{ fontSize: 11, color: "rgba(27,36,32,0.5)", margin: "0 0 8px" }}>
+        Si generaste la misma cuota más de una vez para el mismo jugador (por ejemplo, antes de la corrección
+        de este bug), acá la podés detectar y fusionar sin ir cancha por cancha en la hoja de Google.
+      </p>
+      <button
+        onClick={handleCheck}
+        style={{ width: "100%", background: "none", border: `1px solid ${COLORS.green700}`, color: COLORS.green700, borderRadius: 8, padding: "9px 0", fontWeight: 600, cursor: "pointer", fontSize: 12.5 }}
+      >
+        Buscar cuotas duplicadas
+      </button>
+
+      {duplicates !== null && (
+        <div style={{ marginTop: 10 }}>
+          {duplicates.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: COLORS.green700, fontWeight: 600 }}>No se encontraron duplicados. ✓</p>
+          ) : (
+            <>
+              <p style={{ fontSize: 12.5, color: COLORS.danger, fontWeight: 600, margin: "0 0 8px" }}>
+                Se encontraron {duplicates.length} jugador(es) con cuotas repetidas ({totalDuplicateRows} fila(s) de más):
+              </p>
+              <div style={{ maxHeight: 140, overflowY: "auto", marginBottom: 10 }}>
+                {duplicates.map((group) => (
+                  <div key={group[0].member + group[0].concept} style={{ fontSize: 12, padding: "4px 0", borderBottom: `1px solid ${COLORS.paperDim}` }}>
+                    <strong>{group[0].member}</strong> — "{group[0].concept}" aparece {group.length} veces
+                  </div>
+                ))}
+              </div>
+              {!confirming ? (
+                <button
+                  onClick={() => setConfirming(true)}
+                  style={{ width: "100%", background: COLORS.danger, color: "#fff", border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}
+                >
+                  Fusionar duplicados (se queda con la más reciente de cada uno)
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={handleMerge}
+                    disabled={busy}
+                    style={{ flex: 1, background: COLORS.danger, color: "#fff", border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}
+                  >
+                    Confirmar: borrar {totalDuplicateRows} fila(s) de más
+                  </button>
+                  <button
+                    onClick={() => setConfirming(false)}
+                    style={{ background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "0 14px", cursor: "pointer" }}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3079,8 +3247,9 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
       <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px dashed ${COLORS.paperDim}` }}>
         <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: "0 0 6px" }}>Generación de cuotas</h3>
         <p style={{ fontSize: 11.5, color: "rgba(27,36,32,0.55)", margin: "0 0 10px" }}>
-          Genera esta deuda para los jugadores que tildes abajo — por defecto están todos, destildá a quien
-          no corresponda (por ejemplo, alguien que se sumó después de la cuota anterior y ya la tiene puesta al día).
+          Genera esta deuda para los jugadores que tildes abajo. Si repetís el mismo concepto (ej: "Cuota
+          agosto") para alguien que ya la tenía, se le actualiza el monto/fecha — <strong>no se le duplica</strong>.
+          Así podés tildar a todos de nuevo cuando se suma gente nueva, sin recobrarle a los que ya estaban.
         </p>
         <FieldLabel style={{ marginBottom: 4 }}>Concepto</FieldLabel>
         <input value={cuotaConcept} onChange={(e) => setCuotaConcept(e.target.value)} placeholder="Ej: cuota agosto 2026" style={{ ...inputStyle, marginBottom: 10 }} />
