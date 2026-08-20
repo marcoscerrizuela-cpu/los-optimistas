@@ -2688,6 +2688,8 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
 }
 
 function BilleteraPublica({ movements, participantNames, tournament }) {
+  const [detailType, setDetailType] = useState(null); // null | "cobranza" | "egreso"
+
   const totalCobranzas = movements.filter((m) => m.type === "cobranza").reduce((a, m) => a + Number(m.amount || 0), 0);
   const totalEgresos = movements.filter((m) => m.type === "egreso").reduce((a, m) => a + Number(m.amount || 0), 0);
   const saldoCaja = totalCobranzas - totalEgresos;
@@ -2718,14 +2720,22 @@ function BilleteraPublica({ movements, participantNames, tournament }) {
         </p>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 100, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+          <button
+            onClick={() => setDetailType(detailType === "cobranza" ? null : "cobranza")}
+            className="glBtn"
+            style={{ flex: 1, minWidth: 100, textAlign: "left", background: COLORS.paperDim, border: "none", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}
+          >
             <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Cobrado</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.green700 }}>{fmtMoney(totalCobranzas)}</div>
-          </div>
-          <div style={{ flex: 1, minWidth: 100, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+          </button>
+          <button
+            onClick={() => setDetailType(detailType === "egreso" ? null : "egreso")}
+            className="glBtn"
+            style={{ flex: 1, minWidth: 100, textAlign: "left", background: COLORS.paperDim, border: "none", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}
+          >
             <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Egresos</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.danger }}>{fmtMoney(totalEgresos)}</div>
-          </div>
+          </button>
           <div style={{ flex: 1, minWidth: 100, background: COLORS.green700, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.paper, fontFamily: "'IBM Plex Mono', monospace" }}>Saldo en caja</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.paper }}>{fmtMoney(saldoCaja)}</div>
@@ -2736,9 +2746,52 @@ function BilleteraPublica({ movements, participantNames, tournament }) {
           </div>
         </div>
 
-        <TreasurySituacion balances={balances} />
+        {detailType ? (
+          <BilleteraDetalle movements={movements} type={detailType} onBack={() => setDetailType(null)} />
+        ) : (
+          <TreasurySituacion balances={balances} />
+        )}
       </Card>
     </>
+  );
+}
+
+function BilleteraDetalle({ movements, type, onBack }) {
+  const filtered = movements.filter((m) => m.type === type).sort((a, b) => (a.date < b.date ? 1 : -1));
+  const title = type === "cobranza" ? "Detalle de cobranzas" : "Detalle de egresos";
+  const color = type === "cobranza" ? COLORS.green700 : COLORS.danger;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <h4 style={{ margin: 0, fontFamily: "'Fraunces', serif", fontSize: 15 }}>{title}</h4>
+        <button onClick={onBack} style={{ background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>
+          ← Volver
+        </button>
+      </div>
+      {filtered.length === 0 ? (
+        <p style={{ fontSize: 13, opacity: 0.6 }}>No hay movimientos de este tipo todavía.</p>
+      ) : (
+        <div>
+          {filtered.map((m, idx) => (
+            <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: idx < filtered.length - 1 ? `1px solid ${COLORS.paperDim}` : "none" }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+                  {m.concept}
+                  {m.member && <span style={{ fontWeight: 400, opacity: 0.7 }}> · {m.member}</span>}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.55 }}>
+                  {formatDate(m.date)}{m.category ? ` · ${m.category}` : ""}{m.registeredBy ? ` · ${m.registeredBy}` : ""}
+                </div>
+              </div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color }}>
+                {fmtMoney(m.amount)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
