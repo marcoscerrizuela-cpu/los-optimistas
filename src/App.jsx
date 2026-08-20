@@ -2,7 +2,10 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Flag, Trophy, PlusCircle, Trash2, Settings, ChevronRight, Loader2,
   Camera, X, ImageOff, Lock, UserPlus, Check, Ban, KeyRound, Plus, RefreshCw, Pencil, Wallet,
+  FileText,
 } from "lucide-react";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const FONT_LINK_ID = "golf-league-fonts";
 
@@ -1090,6 +1093,13 @@ function GolfLeagueInner() {
                 tournament={tournament}
               />
             )}
+            {tab === "billetera" && (
+              <BilleteraPublica
+                movements={tesoreriaInTournament}
+                participantNames={acceptedParticipantNames}
+                tournament={tournament}
+              />
+            )}
           </>
         )}
       </div>
@@ -1325,6 +1335,7 @@ function Tabs({ tab, setTab }) {
     { id: "posiciones", label: "Posiciones" },
     { id: "historial", label: "Historial" },
     { id: "estadisticas", label: "Estadísticas" },
+    { id: "billetera", label: "Billetera" },
     { id: "cargar", label: "Cargar" },
   ];
   return (
@@ -2513,6 +2524,56 @@ function computeBalances(movements, participantNames) {
     .sort((a, b) => b.saldo - a.saldo);
 }
 
+// Genera un PDF real (texto seleccionable, no una captura de pantalla) con el
+// resumen de tesorería del torneo activo, listo para compartir por WhatsApp.
+function generateTreasuryPDF(tournament, balances, totals) {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  doc.setFillColor(22, 48, 42); // COLORS.green900
+  doc.rect(0, 0, pageWidth, 32, "F");
+  doc.setTextColor(247, 245, 239); // COLORS.paper
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("Los Optimistas", 14, 16);
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "normal");
+  doc.text(`Informe de Tesorería — ${tournament}`, 14, 24);
+
+  doc.setTextColor(27, 36, 32); // COLORS.ink
+  doc.setFontSize(9);
+  const now = new Date();
+  doc.text(`Generado: ${now.toLocaleDateString("es-AR")} ${now.toLocaleTimeString("es-AR")}`, 14, 40);
+
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "bold");
+  doc.text("Resumen", 14, 50);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(`Cobrado: ${fmtMoney(totals.cobranzas)}`, 14, 58);
+  doc.text(`Egresos: ${fmtMoney(totals.egresos)}`, 14, 65);
+  doc.text(`Saldo en caja: ${fmtMoney(totals.saldoCaja)}`, 14, 72);
+  doc.text(`Deuda total pendiente: ${fmtMoney(totals.deuda)}`, 14, 79);
+
+  autoTable(doc, {
+    startY: 88,
+    head: [["Jugador", "Cuotas generadas", "Pagado", "Saldo", "Estado"]],
+    body: balances.map((b) => [
+      b.member,
+      fmtMoney(b.totalCuotas),
+      fmtMoney(b.totalPagado),
+      fmtMoney(Math.abs(b.saldo)),
+      b.saldo > 0 ? "Debe" : b.saldo < 0 ? "A favor" : "Al día",
+    ]),
+    headStyles: { fillColor: [22, 48, 42], textColor: [247, 245, 239] },
+    styles: { fontSize: 9 },
+    alternateRowStyles: { fillColor: [237, 234, 225] }, // COLORS.paperDim
+  });
+
+  const fileName = `tesoreria_${tournament.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_")}.pdf`;
+  doc.save(fileName);
+}
+
 function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGenerateCuota, onEdit, onRemove, onRemoveBatch, onExport, onClose }) {
   const [subTab, setSubTab] = useState("situacion");
   const [historialInitialFilter, setHistorialInitialFilter] = useState("");
@@ -2578,6 +2639,25 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
           tocá cualquiera de estos cuatro para ir directo al detalle.
         </p>
 
+        <button
+          onClick={() =>
+            generateTreasuryPDF(tournament, balances, {
+              cobranzas: totalCobranzas,
+              egresos: totalEgresos,
+              saldoCaja,
+              deuda: totalDeudaPendiente,
+            })
+          }
+          className="glBtn"
+          style={{
+            width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 8,
+            padding: "11px 0", fontWeight: 700, cursor: "pointer", fontSize: 13, marginBottom: 16,
+          }}
+        >
+          <FileText size={15} /> Exportar informe (PDF)
+        </button>
+
         <TreasurySubTabs tab={subTab} setTab={setSubTab} />
 
         {subTab === "situacion" && <TreasurySituacion balances={balances} />}
@@ -2604,6 +2684,61 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
         </button>
       </div>
     </div>
+  );
+}
+
+function BilleteraPublica({ movements, participantNames, tournament }) {
+  const totalCobranzas = movements.filter((m) => m.type === "cobranza").reduce((a, m) => a + Number(m.amount || 0), 0);
+  const totalEgresos = movements.filter((m) => m.type === "egreso").reduce((a, m) => a + Number(m.amount || 0), 0);
+  const saldoCaja = totalCobranzas - totalEgresos;
+
+  const balances = useMemo(() => computeBalances(movements, participantNames), [movements, participantNames]);
+  const totalDeudaPendiente = useMemo(
+    () => balances.reduce((acc, b) => acc + Math.max(b.saldo, 0), 0),
+    [balances]
+  );
+
+  const banner = (
+    <div style={{ fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace", color: COLORS.brassLight, fontWeight: 600, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+      Viendo: {tournament}
+    </div>
+  );
+
+  return (
+    <>
+      {banner}
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <Wallet size={18} color={COLORS.brass} />
+          <h3 style={{ margin: 0, fontFamily: "'Fraunces', serif", fontSize: 17 }}>Billetera</h3>
+        </div>
+        <p style={{ fontSize: 12, color: "rgba(27,36,32,0.55)", margin: "2px 0 14px" }}>
+          Vista pública, de solo lectura — para cargar o corregir movimientos hace falta el PIN del
+          administrador o del tesorero de este torneo.
+        </p>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 100, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Cobrado</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.green700 }}>{fmtMoney(totalCobranzas)}</div>
+          </div>
+          <div style={{ flex: 1, minWidth: 100, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Egresos</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.danger }}>{fmtMoney(totalEgresos)}</div>
+          </div>
+          <div style={{ flex: 1, minWidth: 100, background: COLORS.green700, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.paper, fontFamily: "'IBM Plex Mono', monospace" }}>Saldo en caja</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.paper }}>{fmtMoney(saldoCaja)}</div>
+          </div>
+          <div style={{ flex: 1, minWidth: 100, background: COLORS.brass, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.green900, fontFamily: "'IBM Plex Mono', monospace" }}>Deuda total</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.green900 }}>{fmtMoney(totalDeudaPendiente)}</div>
+          </div>
+        </div>
+
+        <TreasurySituacion balances={balances} />
+      </Card>
+    </>
   );
 }
 
