@@ -2557,8 +2557,9 @@ function generateTreasuryPDF(tournament, balances, totals) {
 
   autoTable(doc, {
     startY: 88,
-    head: [["Jugador", "Cuotas generadas", "Pagado", "Saldo", "Estado"]],
-    body: balances.map((b) => [
+    head: [["#", "Jugador", "Cuotas generadas", "Pagado", "Saldo", "Estado"]],
+    body: balances.map((b, idx) => [
+      idx + 1,
       b.member,
       fmtMoney(b.totalCuotas),
       fmtMoney(b.totalPagado),
@@ -2567,10 +2568,64 @@ function generateTreasuryPDF(tournament, balances, totals) {
     ]),
     headStyles: { fillColor: [22, 48, 42], textColor: [247, 245, 239] },
     styles: { fontSize: 9 },
+    columnStyles: { 0: { cellWidth: 10, halign: "center" } },
     alternateRowStyles: { fillColor: [237, 234, 225] }, // COLORS.paperDim
   });
 
   const fileName = `tesoreria_${tournament.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_")}.pdf`;
+  doc.save(fileName);
+}
+
+// PDF de detalle: uno para cobranzas (ingresos) y otro para egresos, cada movimiento
+// numerado, con fecha, concepto, categoría, jugador (si corresponde) y monto.
+function generateMovementsPDF(tournament, type, movements) {
+  const sorted = [...movements].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const isIngreso = type === "cobranza";
+  const title = isIngreso ? "Informe de Cobranzas (ingresos)" : "Informe de Egresos";
+  const total = sorted.reduce((a, m) => a + Number(m.amount || 0), 0);
+
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  doc.setFillColor(22, 48, 42);
+  doc.rect(0, 0, pageWidth, 32, "F");
+  doc.setTextColor(247, 245, 239);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("Los Optimistas", 14, 16);
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "normal");
+  doc.text(`${title} — ${tournament}`, 14, 24);
+
+  doc.setTextColor(27, 36, 32);
+  doc.setFontSize(9);
+  const now = new Date();
+  doc.text(`Generado: ${now.toLocaleDateString("es-AR")} ${now.toLocaleTimeString("es-AR")}`, 14, 40);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "bold");
+  doc.text(`Total: ${fmtMoney(total)}  ·  ${sorted.length} movimiento(s)`, 14, 48);
+
+  const head = isIngreso
+    ? [["#", "Fecha", "Jugador", "Concepto", "Categoría", "Monto"]]
+    : [["#", "Fecha", "Concepto", "Categoría", "Monto"]];
+
+  const body = sorted.map((m, idx) =>
+    isIngreso
+      ? [idx + 1, formatDate(m.date), m.member || "", m.concept, m.category || "", fmtMoney(m.amount)]
+      : [idx + 1, formatDate(m.date), m.concept, m.category || "", fmtMoney(m.amount)]
+  );
+
+  autoTable(doc, {
+    startY: 56,
+    head,
+    body,
+    headStyles: { fillColor: [22, 48, 42], textColor: [247, 245, 239] },
+    styles: { fontSize: 9 },
+    columnStyles: { 0: { cellWidth: 10, halign: "center" } },
+    alternateRowStyles: { fillColor: [237, 234, 225] },
+  });
+
+  const fileName = `${type}_${tournament.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_")}.pdf`;
   doc.save(fileName);
 }
 
@@ -2652,11 +2707,35 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
           style={{
             width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
             background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 8,
-            padding: "11px 0", fontWeight: 700, cursor: "pointer", fontSize: 13, marginBottom: 16,
+            padding: "11px 0", fontWeight: 700, cursor: "pointer", fontSize: 13, marginBottom: 8,
           }}
         >
-          <FileText size={15} /> Exportar informe (PDF)
+          <FileText size={15} /> Exportar Cuadro de situación (PDF)
         </button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <button
+            onClick={() => generateMovementsPDF(tournament, "cobranza", movements.filter((m) => m.type === "cobranza"))}
+            className="glBtn"
+            style={{
+              flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              background: "none", border: `1px solid ${COLORS.green700}`, color: COLORS.green700, borderRadius: 8,
+              padding: "9px 0", fontWeight: 600, cursor: "pointer", fontSize: 12,
+            }}
+          >
+            <FileText size={13} /> Cobranzas (PDF)
+          </button>
+          <button
+            onClick={() => generateMovementsPDF(tournament, "egreso", movements.filter((m) => m.type === "egreso"))}
+            className="glBtn"
+            style={{
+              flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              background: "none", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8,
+              padding: "9px 0", fontWeight: 600, cursor: "pointer", fontSize: 12,
+            }}
+          >
+            <FileText size={13} /> Egresos (PDF)
+          </button>
+        </div>
 
         <TreasurySubTabs tab={subTab} setTab={setSubTab} />
 
