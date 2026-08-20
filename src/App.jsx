@@ -583,7 +583,7 @@ function GolfLeagueInner() {
   }
 
   // ---- Torneos ----
-  async function addTournament(name, startDate, endDate, controller1, controller2, courseConfig) {
+  async function addTournament(name, startDate, endDate, controller1, controller2, treasurer, courseConfig) {
     const trimmed = name.trim();
     const freshTournaments = (await storageGet("tournaments")) || tournaments;
     if (!trimmed || freshTournaments.some((t) => t.name === trimmed)) return { ok: false, msg: "Ese nombre ya existe." };
@@ -591,6 +591,7 @@ function GolfLeagueInner() {
     if (startDate > endDate) return { ok: false, msg: "La fecha desde no puede ser posterior a la fecha hasta." };
     if (!controller1 || !controller2) return { ok: false, msg: "Elegí los 2 controllers." };
     if (controller1 === controller2) return { ok: false, msg: "Los 2 controllers deben ser jugadores distintos." };
+    if (!treasurer) return { ok: false, msg: "Elegí quién va a ser el tesorero de este torneo." };
     if (!courseConfig || courseConfig.length === 0) return { ok: false, msg: "Elegí al menos una cancha para el torneo." };
     for (const cc of courseConfig) {
       if (!cc.minRequired || cc.minRequired < 1) return { ok: false, msg: `Ingresá un mínimo válido para ${cc.course}.` };
@@ -604,6 +605,7 @@ function GolfLeagueInner() {
         endDate,
         enabled: true,
         controllers: [controller1, controller2],
+        treasurer,
         participants: [],
         courseConfig,
       },
@@ -627,13 +629,13 @@ function GolfLeagueInner() {
     await storageSet("tournaments", next);
   }
 
-  async function editTournamentDates(name, startDate, endDate, adminPin) {
+  async function editTournamentDates(name, startDate, endDate, treasurer, adminPin) {
     const ok = await verifyAdminPin(adminPin);
     if (!ok) return { ok: false, msg: "PIN de administrador incorrecto." };
     if (!startDate || !endDate) return { ok: false, msg: "Ingresá fecha desde y hasta." };
     if (startDate > endDate) return { ok: false, msg: "La fecha desde no puede ser posterior a la fecha hasta." };
     const freshTournaments = (await storageGet("tournaments")) || tournaments;
-    const next = freshTournaments.map((t) => (t.name === name ? { ...t, startDate, endDate } : t));
+    const next = freshTournaments.map((t) => (t.name === name ? { ...t, startDate, endDate, treasurer } : t));
     setTournaments(next);
     await storageSet("tournaments", next);
     showToast(`Torneo ${name} actualizado`);
@@ -784,9 +786,10 @@ function GolfLeagueInner() {
 
     const freshUsers = (await storageGet("users")) || users;
     const freshTournaments = (await storageGet("tournaments")) || tournaments;
-    const allControllerNames = new Set();
-    freshTournaments.forEach((t) => (t.controllers || []).forEach((c) => allControllerNames.add(c)));
-    const match = freshUsers.find((u) => allControllerNames.has(u.name) && u.pinHash === hash);
+    const activeTournament = freshTournaments.find((t) => t.name === tournament);
+    if (!activeTournament || !activeTournament.treasurer) return false;
+
+    const match = freshUsers.find((u) => u.name === activeTournament.treasurer && u.pinHash === hash);
     return !!match;
   }
 
@@ -2409,7 +2412,7 @@ function TreasuryGate({ authed, onVerifyPin, onClose, children }) {
     setBusy(true);
     const ok = await onVerifyPin(pin);
     setBusy(false);
-    if (!ok) return setError("PIN incorrecto — tiene que ser el del administrador o el de un controller de algún torneo.");
+    if (!ok) return setError("PIN incorrecto — tiene que ser el del administrador o el del tesorero de este torneo.");
   }
 
   return (
@@ -2420,7 +2423,7 @@ function TreasuryGate({ authed, onVerifyPin, onClose, children }) {
           <h2 style={{ fontFamily: "'Fraunces', serif", fontSize: 20, margin: 0 }}>Tesorería</h2>
         </div>
         <p style={{ fontSize: 12.5, color: "rgba(27,36,32,0.6)", margin: "4px 0 16px" }}>
-          Acceso restringido: administrador o controller de cualquier torneo.
+          Acceso restringido: administrador, o el tesorero designado del torneo activo.
         </p>
         <input
           type="password" inputMode="numeric" maxLength={4} value={pin}
@@ -2522,7 +2525,7 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
           <h2 style={{ fontFamily: "'Fraunces', serif", fontSize: 20, margin: 0 }}>Tesorería</h2>
         </div>
         <div style={{ fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace", color: COLORS.brass, fontWeight: 600, margin: "2px 0 14px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-          {tournament}
+          Billetera del torneo: {tournament}
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
@@ -3110,12 +3113,14 @@ function AdminPanel({
   const [tournamentEnd, setTournamentEnd] = useState("");
   const [controller1, setController1] = useState("");
   const [controller2, setController2] = useState("");
+  const [treasurer, setTreasurer] = useState("");
   const [newTournamentCourses, setNewTournamentCourses] = useState({}); // { [courseName]: {checked, minRequired, mode} }
   const [tournamentAddError, setTournamentAddError] = useState("");
 
   const [tournamentEditing, setTournamentEditing] = useState(null);
   const [editStart, setEditStart] = useState("");
   const [editEnd, setEditEnd] = useState("");
+  const [editTreasurer, setEditTreasurer] = useState("");
   const [tournamentAdminPin, setTournamentAdminPin] = useState("");
   const [tournamentEditError, setTournamentEditError] = useState("");
 
@@ -3165,17 +3170,17 @@ function AdminPanel({
         minRequired: Number(v.minRequired) || 0,
         mode: v.mode || "suma",
       }));
-    const res = await onAddTournament(tournamentName, tournamentStart, tournamentEnd, controller1, controller2, courseConfig);
+    const res = await onAddTournament(tournamentName, tournamentStart, tournamentEnd, controller1, controller2, treasurer, courseConfig);
     if (!res.ok) return setTournamentAddError(res.msg);
-    setTournamentName(""); setTournamentStart(""); setTournamentEnd(""); setController1(""); setController2("");
+    setTournamentName(""); setTournamentStart(""); setTournamentEnd(""); setController1(""); setController2(""); setTreasurer("");
     setNewTournamentCourses({});
   }
 
   async function handleSaveTournamentDates(tName) {
     setTournamentEditError("");
-    const res = await onEditTournamentDates(tName, editStart, editEnd, tournamentAdminPin);
+    const res = await onEditTournamentDates(tName, editStart, editEnd, editTreasurer, tournamentAdminPin);
     if (!res.ok) return setTournamentEditError(res.msg);
-    setTournamentEditing(null); setEditStart(""); setEditEnd(""); setTournamentAdminPin("");
+    setTournamentEditing(null); setEditStart(""); setEditEnd(""); setEditTreasurer(""); setTournamentAdminPin("");
   }
 
   return (
@@ -3415,7 +3420,16 @@ function AdminPanel({
           </div>
         </div>
 
-        <FieldLabel style={{ marginBottom: 4 }}>Canchas de este torneo</FieldLabel>
+        <FieldLabel style={{ marginBottom: 4 }}>Tesorero</FieldLabel>
+        <p style={{ fontSize: 11.5, color: "rgba(27,36,32,0.55)", margin: "0 0 6px" }}>
+          Es el único, además de vos como administrador, que puede entrar a la Tesorería de este torneo — un
+          controller que no sea también el tesorero no tiene acceso a la plata.
+        </p>
+        <Select value={treasurer} onChange={setTreasurer} placeholder="Elegí un jugador">
+          {approvedUsers.map((u) => <option key={u.name} value={u.name}>{u.name}</option>)}
+        </Select>
+
+        <FieldLabel style={{ marginBottom: 4, marginTop: 14 }}>Canchas de este torneo</FieldLabel>
         <p style={{ fontSize: 11.5, color: "rgba(27,36,32,0.55)", margin: "0 0 8px" }}>
           Elegí cuáles se juegan, cuántas veces como mínimo cada una, y si se suman las mejores o se toma solo la mejor.
         </p>
@@ -3500,6 +3514,9 @@ function AdminPanel({
                       Controllers: {(t.controllers || []).join(" · ") || "sin definir"}
                     </div>
                     <div style={{ fontSize: 11.5, opacity: 0.55 }}>
+                      Tesorero: {t.treasurer || "sin definir"}
+                    </div>
+                    <div style={{ fontSize: 11.5, opacity: 0.55 }}>
                       Canchas: {(t.courseConfig || []).length > 0
                         ? t.courseConfig.map((cc) => `${cc.course} (${cc.mode === "mejor" ? "mejor de" : "mejores"} ${cc.minRequired})`).join(" · ")
                         : "sin definir"}
@@ -3511,6 +3528,7 @@ function AdminPanel({
                         setTournamentEditing(tournamentEditing === t.name ? null : t.name);
                         setEditStart(t.startDate || "");
                         setEditEnd(t.endDate || "");
+                        setEditTreasurer(t.treasurer || "");
                         setTournamentAdminPin("");
                         setTournamentEditError("");
                       }}
@@ -3536,7 +3554,11 @@ function AdminPanel({
                         <input type="date" value={editEnd} onChange={(e) => setEditEnd(e.target.value)} style={inputStyle} />
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <FieldLabel style={{ marginBottom: 4 }}>Tesorero</FieldLabel>
+                    <Select value={editTreasurer} onChange={setEditTreasurer} placeholder="Elegí un jugador">
+                      {approvedUsers.map((u) => <option key={u.name} value={u.name}>{u.name}</option>)}
+                    </Select>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
                       <input
                         type="password" inputMode="numeric" maxLength={4} value={tournamentAdminPin}
                         onChange={(e) => setTournamentAdminPin(e.target.value.replace(/\D/g, ""))}
@@ -3544,7 +3566,7 @@ function AdminPanel({
                         style={{ ...inputStyle, width: 110 }}
                       />
                       <button className="glBtn" onClick={() => handleSaveTournamentDates(t.name)} style={{ background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-                        Guardar fechas
+                        Guardar
                       </button>
                     </div>
                     {tournamentEditError && <p style={{ color: COLORS.danger, fontSize: 12, margin: "8px 0 0" }}>{tournamentEditError}</p>}
