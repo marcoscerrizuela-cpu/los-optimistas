@@ -790,14 +790,41 @@ function GolfLeagueInner() {
     return !!match;
   }
 
+  // Movimientos individuales: cobranza (pago de un jugador puntual) o egreso (gasto del club, sin jugador).
   async function addTreasuryMovement(entry) {
     const fresh = (await storageGet("tesoreria")) || tesoreria;
-    const record = { ...entry, id: uid() };
+    const record = { ...entry, id: uid(), tournament };
     const next = [...fresh, record];
     setTesoreria(next);
     const saved = await storageSetVerified("tesoreria", next);
     if (!saved) return { ok: false, msg: "No se pudo guardar. Probá de nuevo." };
-    showToast(entry.type === "ingreso" ? "Ingreso registrado" : "Egreso registrado");
+    showToast(entry.type === "cobranza" ? "Cobranza registrada" : "Egreso registrado");
+    return { ok: true };
+  }
+
+  // Genera una cuota (deuda) para cada jugador aceptado al torneo activo, todas agrupadas
+  // bajo el mismo batchId para poder identificarlas y borrarlas juntas si hace falta.
+  async function generateCuotaBatch(concept, amount, date, memberNames) {
+    if (!memberNames || memberNames.length === 0) {
+      return { ok: false, msg: "No hay jugadores aceptados en este torneo para generarles la cuota." };
+    }
+    const fresh = (await storageGet("tesoreria")) || tesoreria;
+    const batchId = uid();
+    const newRecords = memberNames.map((member) => ({
+      id: uid(),
+      tournament,
+      type: "cuota",
+      batchId,
+      member,
+      concept,
+      amount,
+      date,
+    }));
+    const next = [...fresh, ...newRecords];
+    setTesoreria(next);
+    const saved = await storageSetVerified("tesoreria", next);
+    if (!saved) return { ok: false, msg: "No se pudo generar la cuota. Probá de nuevo." };
+    showToast(`Cuota "${concept}" generada para ${memberNames.length} jugador(es)`);
     return { ok: true };
   }
 
@@ -809,20 +836,37 @@ function GolfLeagueInner() {
     showToast("Movimiento eliminado");
   }
 
+  // Borra TODA una tanda de cuotas generada de una vez (por si se generó con el monto o
+  // el torneo equivocado) — más rápido que borrar jugador por jugador.
+  async function removeTreasuryBatch(batchId) {
+    const fresh = (await storageGet("tesoreria")) || tesoreria;
+    const next = fresh.filter((m) => m.batchId !== batchId);
+    setTesoreria(next);
+    await storageSet("tesoreria", next);
+    showToast("Cuota masiva eliminada por completo");
+  }
+
+  const tesoreriaInTournament = useMemo(
+    () => tesoreria.filter((m) => m.tournament === tournament),
+    [tesoreria, tournament]
+  );
+
   function exportTreasuryCSV() {
-    const header = ["Fecha", "Tipo", "Categoría", "Concepto", "Monto", "Registrado por"];
+    const typeLabel = { cuota: "Cuota generada", cobranza: "Cobranza", egreso: "Egreso" };
+    const header = ["Fecha", "Tipo", "Jugador", "Categoría", "Concepto", "Monto", "Registrado por"];
     const rows = [
       header,
-      ...[...tesoreria].sort((a, b) => (a.date < b.date ? 1 : -1)).map((m) => [
+      ...[...tesoreriaInTournament].sort((a, b) => (a.date < b.date ? 1 : -1)).map((m) => [
         formatDate(m.date),
-        m.type === "ingreso" ? "Ingreso" : "Egreso",
-        m.category,
+        typeLabel[m.type] || m.type,
+        m.member || "",
+        m.category || "",
         m.concept,
         m.amount,
         m.registeredBy || "",
       ]),
     ];
-    downloadCSV("tesoreria_los_optimistas.csv", rows);
+    downloadCSV(`tesoreria_${safeFilename(tournament)}.csv`, rows);
   }
 
   function exportHistorialCSV() {
@@ -1088,9 +1132,13 @@ function GolfLeagueInner() {
           }}
         >
           <TreasuryPanel
-            movements={tesoreria}
+            movements={tesoreriaInTournament}
+            tournament={tournament}
+            participantNames={acceptedParticipantNames}
             onAdd={addTreasuryMovement}
+            onGenerateCuota={generateCuotaBatch}
             onRemove={removeTreasuryMovement}
+            onRemoveBatch={removeTreasuryBatch}
             onExport={exportTreasuryCSV}
             onClose={() => {
               setShowTreasury(false);
@@ -2382,178 +2430,110 @@ function TreasuryGate({ authed, onVerifyPin, onClose, children }) {
 }
 
 const TREASURY_CATEGORIES = {
-  ingreso: ["Cuota", "Aporte extra", "Otro"],
+  cobranza: ["Cuota", "Aporte extra", "Otro"],
   egreso: ["Cancha", "Torneo", "Evento", "Otro"],
 };
 
-function TreasuryPanel({ movements, onAdd, onRemove, onExport, onClose }) {
-  const [type, setType] = useState("ingreso");
-  const [date, setDate] = useState(todayStr());
-  const [concept, setConcept] = useState("");
-  const [category, setCategory] = useState(TREASURY_CATEGORIES.ingreso[0]);
-  const [amount, setAmount] = useState("");
-  const [registeredBy, setRegisteredBy] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [deleting, setDeleting] = useState(null);
+function fmtMoney(n) {
+  return "$" + Number(n || 0).toLocaleString("es-AR");
+}
 
-  const totalIngresos = movements.filter((m) => m.type === "ingreso").reduce((a, m) => a + Number(m.amount || 0), 0);
+function TreasurySubTabs({ tab, setTab }) {
+  const items = [
+    { id: "situacion", label: "Cuadro de situación" },
+    { id: "cargar", label: "Cargar" },
+    { id: "historial", label: "Historial" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 4, marginBottom: 16, borderBottom: `1px solid ${COLORS.paperDim}`, overflowX: "auto" }}>
+      {items.map((it) => (
+        <button
+          key={it.id}
+          onClick={() => setTab(it.id)}
+          style={{
+            background: "none", border: "none",
+            borderBottom: `2px solid ${tab === it.id ? COLORS.brass : "transparent"}`,
+            color: tab === it.id ? COLORS.ink : "rgba(27,36,32,0.5)",
+            fontWeight: 600, fontSize: 13, padding: "9px 10px", cursor: "pointer", whiteSpace: "nowrap",
+          }}
+        >
+          {it.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Saldo por jugador: todas las cuotas que se le generaron menos todo lo que pagó.
+// Positivo = debe. Cero = al día. Negativo = a favor (pagó de más).
+function computeBalances(movements, participantNames) {
+  const byMember = {};
+  for (const name of participantNames) byMember[name] = { member: name, totalCuotas: 0, totalPagado: 0 };
+  for (const m of movements) {
+    if (m.type === "cuota" && m.member) {
+      if (!byMember[m.member]) byMember[m.member] = { member: m.member, totalCuotas: 0, totalPagado: 0 };
+      byMember[m.member].totalCuotas += Number(m.amount || 0);
+    }
+    if (m.type === "cobranza" && m.member) {
+      if (!byMember[m.member]) byMember[m.member] = { member: m.member, totalCuotas: 0, totalPagado: 0 };
+      byMember[m.member].totalPagado += Number(m.amount || 0);
+    }
+  }
+  return Object.values(byMember)
+    .map((b) => ({ ...b, saldo: b.totalCuotas - b.totalPagado }))
+    .sort((a, b) => b.saldo - a.saldo);
+}
+
+function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGenerateCuota, onRemove, onRemoveBatch, onExport, onClose }) {
+  const [subTab, setSubTab] = useState("situacion");
+
+  const totalCobranzas = movements.filter((m) => m.type === "cobranza").reduce((a, m) => a + Number(m.amount || 0), 0);
   const totalEgresos = movements.filter((m) => m.type === "egreso").reduce((a, m) => a + Number(m.amount || 0), 0);
-  const saldo = totalIngresos - totalEgresos;
-  const sorted = [...movements].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const saldoCaja = totalCobranzas - totalEgresos;
 
-  function fmtMoney(n) {
-    return "$" + Number(n || 0).toLocaleString("es-AR");
-  }
-
-  function handleTypeChange(t) {
-    setType(t);
-    setCategory(TREASURY_CATEGORIES[t][0]);
-  }
-
-  async function handleAdd() {
-    setError("");
-    if (!concept.trim()) return setError("Ingresá un concepto.");
-    const amountNum = Number(amount);
-    if (!amount || isNaN(amountNum) || amountNum <= 0) return setError("Ingresá un monto válido.");
-    if (!registeredBy.trim()) return setError("Ingresá tu nombre (quién registra el movimiento).");
-    setBusy(true);
-    const res = await onAdd({ type, date, concept: concept.trim(), category, amount: amountNum, registeredBy: registeredBy.trim() });
-    setBusy(false);
-    if (!res.ok) return setError(res.msg);
-    setConcept("");
-    setAmount("");
-  }
+  const balances = useMemo(() => computeBalances(movements, participantNames), [movements, participantNames]);
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: COLORS.paper, color: COLORS.ink, width: "100%", maxWidth: 480, borderRadius: "16px 16px 0 0", padding: 22, maxHeight: "88vh", overflowY: "auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <Wallet size={20} color={COLORS.brass} />
           <h2 style={{ fontFamily: "'Fraunces', serif", fontSize: 20, margin: 0 }}>Tesorería</h2>
         </div>
+        <div style={{ fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace", color: COLORS.brass, fontWeight: 600, margin: "2px 0 14px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          {tournament}
+        </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
           <div style={{ flex: 1, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Ingresos</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.green700 }}>{fmtMoney(totalIngresos)}</div>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Cobrado</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.green700 }}>{fmtMoney(totalCobranzas)}</div>
           </div>
           <div style={{ flex: 1, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Egresos</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.danger }}>{fmtMoney(totalEgresos)}</div>
           </div>
           <div style={{ flex: 1, background: COLORS.green700, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.paper, fontFamily: "'IBM Plex Mono', monospace" }}>Saldo</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.paper }}>{fmtMoney(saldo)}</div>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.paper, fontFamily: "'IBM Plex Mono', monospace" }}>Saldo en caja</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.paper }}>{fmtMoney(saldoCaja)}</div>
           </div>
         </div>
+        <p style={{ fontSize: 10.5, color: "rgba(27,36,32,0.45)", margin: "0 0 14px" }}>
+          "Saldo en caja" es plata real (lo cobrado menos lo gastado). No incluye cuotas generadas y todavía no pagadas — eso está en el Cuadro de situación.
+        </p>
 
-        <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: "0 0 10px" }}>Registrar movimiento</h3>
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <button
-            onClick={() => handleTypeChange("ingreso")}
-            style={{
-              flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13,
-              border: type === "ingreso" ? "none" : `1px solid ${COLORS.paperDim}`,
-              background: type === "ingreso" ? COLORS.green700 : "none",
-              color: type === "ingreso" ? COLORS.paper : COLORS.ink,
-            }}
-          >
-            Ingreso
-          </button>
-          <button
-            onClick={() => handleTypeChange("egreso")}
-            style={{
-              flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13,
-              border: type === "egreso" ? "none" : `1px solid ${COLORS.paperDim}`,
-              background: type === "egreso" ? COLORS.danger : "none",
-              color: type === "egreso" ? COLORS.paper : COLORS.ink,
-            }}
-          >
-            Egreso
-          </button>
-        </div>
+        <TreasurySubTabs tab={subTab} setTab={setSubTab} />
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 130 }}>
-            <FieldLabel style={{ marginBottom: 4 }}>Fecha</FieldLabel>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
-          </div>
-          <div style={{ flex: 1, minWidth: 130 }}>
-            <FieldLabel style={{ marginBottom: 4 }}>Categoría</FieldLabel>
-            <Select value={category} onChange={setCategory}>
-              {TREASURY_CATEGORIES[type].map((c) => <option key={c} value={c}>{c}</option>)}
-            </Select>
-          </div>
-        </div>
-
-        <FieldLabel style={{ marginBottom: 4 }}>Concepto</FieldLabel>
-        <input value={concept} onChange={(e) => setConcept(e.target.value)} placeholder="Ej: cuota agosto, alquiler cancha Norte..." style={{ ...inputStyle, marginBottom: 10 }} />
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 100 }}>
-            <FieldLabel style={{ marginBottom: 4 }}>Monto</FieldLabel>
-            <input type="number" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" style={inputStyle} />
-          </div>
-          <div style={{ flex: 1, minWidth: 140 }}>
-            <FieldLabel style={{ marginBottom: 4 }}>Registrado por (vos)</FieldLabel>
-            <input value={registeredBy} onChange={(e) => setRegisteredBy(e.target.value)} placeholder="Tu nombre" style={inputStyle} />
-          </div>
-        </div>
-
-        {error && <p style={{ color: COLORS.danger, fontSize: 12.5, margin: "0 0 10px" }}>{error}</p>}
-        <button className="glBtn" onClick={handleAdd} disabled={busy} style={{ width: "100%", background: COLORS.brass, color: COLORS.green900, border: "none", borderRadius: 8, padding: "12px 0", fontWeight: 700, cursor: "pointer", marginBottom: 18 }}>
-          Registrar {type === "ingreso" ? "ingreso" : "egreso"}
-        </button>
-
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: 0 }}>Movimientos ({movements.length})</h3>
-          <button onClick={onExport} style={{ background: "none", border: `1px solid ${COLORS.green700}`, color: COLORS.green700, borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>
-            Exportar CSV
-          </button>
-        </div>
-
-        {sorted.length === 0 ? (
-          <p style={{ fontSize: 13, opacity: 0.6 }}>Todavía no hay movimientos cargados.</p>
-        ) : (
-          <div>
-            {sorted.map((m, idx) => (
-              <div key={m.id} style={{ borderBottom: idx < sorted.length - 1 ? `1px solid ${COLORS.paperDim}` : "none", padding: "10px 0" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{m.concept}</div>
-                    <div style={{ fontSize: 11.5, opacity: 0.6 }}>
-                      {formatDate(m.date)} · {m.category} · {m.registeredBy}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color: m.type === "ingreso" ? COLORS.green700 : COLORS.danger }}>
-                      {m.type === "ingreso" ? "+" : "−"}{fmtMoney(m.amount)}
-                    </div>
-                    <button onClick={() => setDeleting(deleting === m.id ? null : m.id)} style={{ background: "none", border: "none", color: "rgba(140,59,46,0.7)", cursor: "pointer" }}>
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-                {deleting === m.id && (
-                  <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                    <button
-                      onClick={() => { onRemove(m.id); setDeleting(null); }}
-                      style={{ flex: 1, background: COLORS.danger, color: "#fff", border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
-                    >
-                      Confirmar borrado
-                    </button>
-                    <button
-                      onClick={() => setDeleting(null)}
-                      style={{ flex: 1, background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 6, padding: "7px 0", fontSize: 12, cursor: "pointer" }}
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+        {subTab === "situacion" && <TreasurySituacion balances={balances} />}
+        {subTab === "cargar" && (
+          <TreasuryCargar
+            participantNames={participantNames}
+            onAdd={onAdd}
+            onGenerateCuota={onGenerateCuota}
+          />
+        )}
+        {subTab === "historial" && (
+          <TreasuryHistorial movements={movements} onRemove={onRemove} onRemoveBatch={onRemoveBatch} onExport={onExport} />
         )}
 
         <button onClick={onClose} style={{ marginTop: 18, width: "100%", background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "10px 0", fontWeight: 600, cursor: "pointer" }}>
@@ -2563,6 +2543,326 @@ function TreasuryPanel({ movements, onAdd, onRemove, onExport, onClose }) {
     </div>
   );
 }
+
+function TreasurySituacion({ balances }) {
+  if (balances.length === 0) {
+    return <p style={{ fontSize: 13.5, opacity: 0.6 }}>No hay jugadores aceptados en este torneo todavía.</p>;
+  }
+  return (
+    <div>
+      <p style={{ fontSize: 11.5, color: "rgba(27,36,32,0.55)", margin: "0 0 10px" }}>
+        Quién debe primero. Incluye a todos los aceptados al torneo, tengan o no movimientos cargados.
+      </p>
+      {balances.map((b, idx) => {
+        const status = b.saldo > 0 ? "debe" : b.saldo < 0 ? "favor" : "aldia";
+        const statusLabel = status === "debe" ? "Debe" : status === "favor" ? "A favor" : "Al día";
+        const statusColor = status === "debe" ? COLORS.danger : status === "favor" ? COLORS.green700 : "rgba(27,36,32,0.4)";
+        return (
+          <div
+            key={b.member}
+            style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "10px 0", borderBottom: idx < balances.length - 1 ? `1px solid ${COLORS.paperDim}` : "none",
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{b.member}</div>
+              <div style={{ fontSize: 11, color: "rgba(27,36,32,0.5)" }}>
+                Cuotas: {fmtMoney(b.totalCuotas)} · Pagado: {fmtMoney(b.totalPagado)}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 15, color: statusColor }}>
+                {fmtMoney(Math.abs(b.saldo))}
+              </div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: statusColor, textTransform: "uppercase" }}>{statusLabel}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
+  const [type, setType] = useState("cobranza");
+  const [date, setDate] = useState(todayStr());
+  const [member, setMember] = useState("");
+  const [concept, setConcept] = useState("");
+  const [category, setCategory] = useState(TREASURY_CATEGORIES.cobranza[0]);
+  const [amount, setAmount] = useState("");
+  const [registeredBy, setRegisteredBy] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const [cuotaConcept, setCuotaConcept] = useState("");
+  const [cuotaAmount, setCuotaAmount] = useState("");
+  const [cuotaDate, setCuotaDate] = useState(todayStr());
+  const [cuotaConfirming, setCuotaConfirming] = useState(false);
+  const [cuotaError, setCuotaError] = useState("");
+  const [cuotaBusy, setCuotaBusy] = useState(false);
+
+  function handleTypeChange(t) {
+    setType(t);
+    setCategory(TREASURY_CATEGORIES[t][0]);
+    setMember("");
+  }
+
+  async function handleAdd() {
+    setError("");
+    if (type === "cobranza" && !member) return setError("Elegí a qué jugador corresponde el pago.");
+    if (!concept.trim()) return setError("Ingresá un concepto.");
+    const amountNum = Number(amount);
+    if (!amount || isNaN(amountNum) || amountNum <= 0) return setError("Ingresá un monto válido.");
+    if (!registeredBy.trim()) return setError("Ingresá tu nombre (quién registra el movimiento).");
+    setBusy(true);
+    const res = await onAdd({
+      type, date, concept: concept.trim(), amount: amountNum, registeredBy: registeredBy.trim(),
+      ...(type === "cobranza" ? { member, category } : { category }),
+    });
+    setBusy(false);
+    if (!res.ok) return setError(res.msg);
+    setConcept("");
+    setAmount("");
+  }
+
+  async function handleGenerateCuota() {
+    setCuotaError("");
+    if (!cuotaConcept.trim()) return setCuotaError("Ingresá un concepto (ej: cuota agosto).");
+    const amountNum = Number(cuotaAmount);
+    if (!cuotaAmount || isNaN(amountNum) || amountNum <= 0) return setCuotaError("Ingresá un monto válido.");
+    setCuotaBusy(true);
+    const res = await onGenerateCuota(cuotaConcept.trim(), amountNum, cuotaDate, participantNames);
+    setCuotaBusy(false);
+    if (!res.ok) return setCuotaError(res.msg);
+    setCuotaConcept("");
+    setCuotaAmount("");
+    setCuotaConfirming(false);
+  }
+
+  return (
+    <div>
+      <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: "0 0 10px" }}>Registrar movimiento</h3>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <button
+          onClick={() => handleTypeChange("cobranza")}
+          style={{
+            flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13,
+            border: type === "cobranza" ? "none" : `1px solid ${COLORS.paperDim}`,
+            background: type === "cobranza" ? COLORS.green700 : "none",
+            color: type === "cobranza" ? COLORS.paper : COLORS.ink,
+          }}
+        >
+          Cobranza (pago de un jugador)
+        </button>
+        <button
+          onClick={() => handleTypeChange("egreso")}
+          style={{
+            flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13,
+            border: type === "egreso" ? "none" : `1px solid ${COLORS.paperDim}`,
+            background: type === "egreso" ? COLORS.danger : "none",
+            color: type === "egreso" ? COLORS.paper : COLORS.ink,
+          }}
+        >
+          Egreso (gasto del club)
+        </button>
+      </div>
+
+      {type === "cobranza" && (
+        <>
+          <FieldLabel style={{ marginBottom: 4 }}>Jugador que paga</FieldLabel>
+          <Select value={member} onChange={setMember} placeholder="Elegí un jugador">
+            {participantNames.map((n) => <option key={n} value={n}>{n}</option>)}
+          </Select>
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 130 }}>
+          <FieldLabel style={{ marginBottom: 4 }}>Fecha</FieldLabel>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+        </div>
+        <div style={{ flex: 1, minWidth: 130 }}>
+          <FieldLabel style={{ marginBottom: 4 }}>Categoría</FieldLabel>
+          <Select value={category} onChange={setCategory}>
+            {TREASURY_CATEGORIES[type].map((c) => <option key={c} value={c}>{c}</option>)}
+          </Select>
+        </div>
+      </div>
+
+      <FieldLabel style={{ marginBottom: 4 }}>Concepto</FieldLabel>
+      <input value={concept} onChange={(e) => setConcept(e.target.value)} placeholder={type === "cobranza" ? "Ej: pago cuota agosto" : "Ej: alquiler cancha Norte"} style={{ ...inputStyle, marginBottom: 10 }} />
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 100 }}>
+          <FieldLabel style={{ marginBottom: 4 }}>Monto</FieldLabel>
+          <input type="number" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" style={inputStyle} />
+        </div>
+        <div style={{ flex: 1, minWidth: 140 }}>
+          <FieldLabel style={{ marginBottom: 4 }}>Registrado por (vos)</FieldLabel>
+          <input value={registeredBy} onChange={(e) => setRegisteredBy(e.target.value)} placeholder="Tu nombre" style={inputStyle} />
+        </div>
+      </div>
+
+      {error && <p style={{ color: COLORS.danger, fontSize: 12.5, margin: "0 0 10px" }}>{error}</p>}
+      <button className="glBtn" onClick={handleAdd} disabled={busy} style={{ width: "100%", background: COLORS.brass, color: COLORS.green900, border: "none", borderRadius: 8, padding: "12px 0", fontWeight: 700, cursor: "pointer" }}>
+        Registrar {type === "cobranza" ? "cobranza" : "egreso"}
+      </button>
+
+      <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px dashed ${COLORS.paperDim}` }}>
+        <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: "0 0 6px" }}>Generación de cuotas</h3>
+        <p style={{ fontSize: 11.5, color: "rgba(27,36,32,0.55)", margin: "0 0 10px" }}>
+          Genera esta deuda para TODOS los {participantNames.length} jugador(es) aceptados al torneo activo, de una sola vez.
+        </p>
+        <FieldLabel style={{ marginBottom: 4 }}>Concepto</FieldLabel>
+        <input value={cuotaConcept} onChange={(e) => setCuotaConcept(e.target.value)} placeholder="Ej: cuota agosto 2026" style={{ ...inputStyle, marginBottom: 10 }} />
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 100 }}>
+            <FieldLabel style={{ marginBottom: 4 }}>Monto por jugador</FieldLabel>
+            <input type="number" inputMode="decimal" value={cuotaAmount} onChange={(e) => setCuotaAmount(e.target.value)} placeholder="0" style={inputStyle} />
+          </div>
+          <div style={{ flex: 1, minWidth: 130 }}>
+            <FieldLabel style={{ marginBottom: 4 }}>Fecha</FieldLabel>
+            <input type="date" value={cuotaDate} onChange={(e) => setCuotaDate(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+        {cuotaError && <p style={{ color: COLORS.danger, fontSize: 12.5, margin: "0 0 10px" }}>{cuotaError}</p>}
+        {!cuotaConfirming ? (
+          <button
+            onClick={() => setCuotaConfirming(true)}
+            disabled={participantNames.length === 0}
+            style={{ width: "100%", background: "none", border: `1px dashed ${COLORS.green700}`, color: COLORS.green700, borderRadius: 8, padding: "11px 0", fontWeight: 700, cursor: participantNames.length === 0 ? "not-allowed" : "pointer", fontSize: 13, opacity: participantNames.length === 0 ? 0.5 : 1 }}
+          >
+            Aplicar a los {participantNames.length} jugador(es) del torneo
+          </button>
+        ) : (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleGenerateCuota}
+              disabled={cuotaBusy}
+              style={{ flex: 1, background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 8, padding: "11px 0", fontWeight: 700, cursor: "pointer", fontSize: 13 }}
+            >
+              Confirmar para los {participantNames.length} jugador(es)
+            </button>
+            <button
+              onClick={() => setCuotaConfirming(false)}
+              style={{ background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "0 14px", cursor: "pointer" }}
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TreasuryHistorial({ movements, onRemove, onRemoveBatch, onExport }) {
+  const [filterMember, setFilterMember] = useState("");
+  const [filterType, setFilterType] = useState("");
+  const [deleting, setDeleting] = useState(null);
+
+  const memberOptions = useMemo(
+    () => Array.from(new Set(movements.filter((m) => m.member).map((m) => m.member))).sort(),
+    [movements]
+  );
+
+  const filtered = movements.filter(
+    (m) => (!filterMember || m.member === filterMember) && (!filterType || m.type === filterType)
+  );
+  const sorted = [...filtered].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const typeLabel = { cuota: "Cuota generada", cobranza: "Cobranza", egreso: "Egreso" };
+  const typeColor = { cuota: COLORS.brass, cobranza: COLORS.green700, egreso: COLORS.danger };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 110 }}>
+          <FieldLabel style={{ marginBottom: 4 }}>Jugador</FieldLabel>
+          <Select value={filterMember} onChange={setFilterMember} placeholder="Todos">
+            <option value="">Todos</option>
+            {memberOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+          </Select>
+        </div>
+        <div style={{ flex: 1, minWidth: 110 }}>
+          <FieldLabel style={{ marginBottom: 4 }}>Tipo</FieldLabel>
+          <Select value={filterType} onChange={setFilterType} placeholder="Todos">
+            <option value="">Todos</option>
+            <option value="cuota">Cuota generada</option>
+            <option value="cobranza">Cobranza</option>
+            <option value="egreso">Egreso</option>
+          </Select>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: 0 }}>Movimientos ({sorted.length})</h3>
+        <button onClick={onExport} style={{ background: "none", border: `1px solid ${COLORS.green700}`, color: COLORS.green700, borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>
+          Exportar CSV
+        </button>
+      </div>
+
+      {sorted.length === 0 ? (
+        <p style={{ fontSize: 13, opacity: 0.6 }}>No hay movimientos que coincidan con el filtro.</p>
+      ) : (
+        <div>
+          {sorted.map((m, idx) => (
+            <div key={m.id} style={{ borderBottom: idx < sorted.length - 1 ? `1px solid ${COLORS.paperDim}` : "none", padding: "10px 0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+                    {m.concept}
+                    {m.member && <span style={{ fontWeight: 400, opacity: 0.7 }}> · {m.member}</span>}
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: typeColor[m.type], textTransform: "uppercase" }}>
+                    {typeLabel[m.type]}
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.55 }}>
+                    {formatDate(m.date)}{m.category ? ` · ${m.category}` : ""}{m.registeredBy ? ` · ${m.registeredBy}` : ""}
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color: m.type === "cobranza" ? COLORS.green700 : m.type === "egreso" ? COLORS.danger : COLORS.brass }}>
+                    {fmtMoney(m.amount)}
+                  </div>
+                  <button onClick={() => setDeleting(deleting === m.id ? null : m.id)} style={{ background: "none", border: "none", color: "rgba(140,59,46,0.7)", cursor: "pointer" }}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+              {deleting === m.id && (
+                <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => { onRemove(m.id); setDeleting(null); }}
+                    style={{ flex: 1, background: COLORS.danger, color: "#fff", border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Borrar solo esta
+                  </button>
+                  {m.type === "cuota" && m.batchId && (
+                    <button
+                      onClick={() => { onRemoveBatch(m.batchId); setDeleting(null); }}
+                      style={{ flex: 1, background: "none", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                    >
+                      Borrar toda la tanda
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setDeleting(null)}
+                    style={{ flex: 1, background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 6, padding: "7px 0", fontSize: 12, cursor: "pointer" }}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function AdminGate({ hasAdminPin, authed, onSetupPin, onVerifyPin, onClose, children }) {
   const [pin, setPin] = useState("");
