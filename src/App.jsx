@@ -2504,17 +2504,23 @@ function TreasurySubTabs({ tab, setTab }) {
   );
 }
 
+// No es un jugador — plata del grupo en general, sin dueño. Se puede elegir como
+// "jugador que paga" en una cobranza, pero no entra en el Cuadro de situación:
+// no tiene sentido preguntarse si el fondo común "debe" o está "al día".
+const FONDO_COMUN = "Fondo común";
+
 // Saldo por jugador: todas las cuotas que se le generaron menos todo lo que pagó.
 // Positivo = debe. Cero = al día. Negativo = a favor (pagó de más).
 function computeBalances(movements, participantNames) {
   const byMember = {};
   for (const name of participantNames) byMember[name] = { member: name, totalCuotas: 0, totalPagado: 0 };
   for (const m of movements) {
-    if (m.type === "cuota" && m.member) {
+    if (!m.member || m.member === FONDO_COMUN) continue;
+    if (m.type === "cuota") {
       if (!byMember[m.member]) byMember[m.member] = { member: m.member, totalCuotas: 0, totalPagado: 0 };
       byMember[m.member].totalCuotas += Number(m.amount || 0);
     }
-    if (m.type === "cobranza" && m.member) {
+    if (m.type === "cobranza") {
       if (!byMember[m.member]) byMember[m.member] = { member: m.member, totalCuotas: 0, totalPagado: 0 };
       byMember[m.member].totalPagado += Number(m.amount || 0);
     }
@@ -3002,6 +3008,7 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
         <>
           <FieldLabel style={{ marginBottom: 4 }}>Jugador que paga</FieldLabel>
           <Select value={member} onChange={setMember} placeholder="Elegí un jugador">
+            <option value={FONDO_COMUN}>— {FONDO_COMUN} (no es de nadie en particular) —</option>
             {participantNames.map((n) => <option key={n} value={n}>{n}</option>)}
           </Select>
         </>
