@@ -1335,8 +1335,8 @@ function Tabs({ tab, setTab }) {
     { id: "posiciones", label: "Posiciones" },
     { id: "historial", label: "Historial" },
     { id: "estadisticas", label: "Estadísticas" },
-    { id: "billetera", label: "Billetera" },
     { id: "cargar", label: "Cargar" },
+    { id: "billetera", label: "Billetera" },
   ];
   return (
     <div style={{ display: "flex", gap: 4, marginTop: 24, marginBottom: 20, borderBottom: `1px solid rgba(255,255,255,0.1)`, overflowX: "auto" }}>
