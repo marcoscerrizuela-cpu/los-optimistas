@@ -2562,6 +2562,10 @@ function generateTreasuryPDF(tournament, balances, totals) {
   doc.text(`Saldo en caja: ${fmtMoney(totals.saldoCaja)}`, 14, 79);
   doc.text(`Deuda total pendiente: ${fmtMoney(totals.deuda)}`, 14, 86);
 
+  const totalCuotasSum = balances.reduce((a, b) => a + b.totalCuotas, 0);
+  const totalPagadoSum = balances.reduce((a, b) => a + b.totalPagado, 0);
+  const totalSaldoSum = balances.reduce((a, b) => a + b.saldo, 0);
+
   autoTable(doc, {
     startY: 95,
     head: [["#", "Jugador", "Cuotas generadas", "Pagado", "Saldo", "Estado"]],
@@ -2573,7 +2577,9 @@ function generateTreasuryPDF(tournament, balances, totals) {
       fmtMoney(Math.abs(b.saldo)),
       b.saldo > 0 ? "Debe" : b.saldo < 0 ? "A favor" : "Al día",
     ]),
+    foot: [["", "TOTAL", fmtMoney(totalCuotasSum), fmtMoney(totalPagadoSum), fmtMoney(totalSaldoSum), ""]],
     headStyles: { fillColor: [22, 48, 42], textColor: [247, 245, 239] },
+    footStyles: { fillColor: [200, 167, 107], textColor: [22, 48, 42], fontStyle: "bold" }, // COLORS.brassLight
     styles: { fontSize: 9 },
     columnStyles: { 0: { cellWidth: 10, halign: "center" } },
     alternateRowStyles: { fillColor: [237, 234, 225] }, // COLORS.paperDim
