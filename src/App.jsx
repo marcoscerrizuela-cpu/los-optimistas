@@ -2756,6 +2756,7 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
         {subTab === "historial" && (
           <TreasuryHistorial
             movements={movements}
+            participantNames={participantNames}
             initialFilterType={historialInitialFilter}
             onEdit={onEdit}
             onRemove={onRemove}
@@ -3094,7 +3095,7 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
   );
 }
 
-function TreasuryHistorial({ movements, initialFilterType, onEdit, onRemove, onRemoveBatch, onExport }) {
+function TreasuryHistorial({ movements, participantNames, initialFilterType, onEdit, onRemove, onRemoveBatch, onExport }) {
   const [filterMember, setFilterMember] = useState("");
   const [filterType, setFilterType] = useState(initialFilterType || "");
 
@@ -3150,6 +3151,7 @@ function TreasuryHistorial({ movements, initialFilterType, onEdit, onRemove, onR
               isLast={idx === sorted.length - 1}
               typeLabel={typeLabel}
               typeColor={typeColor}
+              participantNames={participantNames}
               onEdit={onEdit}
               onRemove={onRemove}
               onRemoveBatch={onRemoveBatch}
@@ -3161,13 +3163,14 @@ function TreasuryHistorial({ movements, initialFilterType, onEdit, onRemove, onR
   );
 }
 
-function TreasuryMovementRow({ movement: m, isLast, typeLabel, typeColor, onEdit, onRemove, onRemoveBatch }) {
+function TreasuryMovementRow({ movement: m, isLast, typeLabel, typeColor, participantNames, onEdit, onRemove, onRemoveBatch }) {
   const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editConcept, setEditConcept] = useState(m.concept);
   const [editAmount, setEditAmount] = useState(String(m.amount));
   const [editDate, setEditDate] = useState(m.date);
   const [editCategory, setEditCategory] = useState(m.category || "");
+  const [editMember, setEditMember] = useState(m.member || "");
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
 
@@ -3177,9 +3180,11 @@ function TreasuryMovementRow({ movement: m, isLast, typeLabel, typeColor, onEdit
     const amountNum = Number(editAmount);
     if (!editAmount || isNaN(amountNum) || amountNum <= 0) return setEditError("Ingresá un monto válido.");
     if (!editDate) return setEditError("Ingresá una fecha.");
+    if (m.type === "cobranza" && !editMember) return setEditError("Elegí a quién corresponde el pago.");
     setEditBusy(true);
     const updates = { concept: editConcept.trim(), amount: amountNum, date: editDate };
     if (m.type !== "cuota") updates.category = editCategory;
+    if (m.type === "cobranza") updates.member = editMember;
     const res = await onEdit(m.id, updates);
     setEditBusy(false);
     if (!res.ok) return setEditError(res.msg);
@@ -3238,6 +3243,15 @@ function TreasuryMovementRow({ movement: m, isLast, typeLabel, typeColor, onEdit
               <FieldLabel style={{ marginBottom: 4 }}>Categoría</FieldLabel>
               <Select value={editCategory} onChange={setEditCategory} placeholder="Elegí">
                 {(TREASURY_CATEGORIES[m.type] || []).map((c) => <option key={c} value={c}>{c}</option>)}
+              </Select>
+            </>
+          )}
+          {m.type === "cobranza" && (
+            <>
+              <FieldLabel style={{ marginBottom: 4, marginTop: 8 }}>Jugador que paga</FieldLabel>
+              <Select value={editMember} onChange={setEditMember} placeholder="Elegí un jugador">
+                <option value={FONDO_COMUN}>— {FONDO_COMUN} (no es de nadie en particular) —</option>
+                {participantNames.map((n) => <option key={n} value={n}>{n}</option>)}
               </Select>
             </>
           )}
