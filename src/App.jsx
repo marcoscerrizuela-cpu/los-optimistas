@@ -828,6 +828,16 @@ function GolfLeagueInner() {
     return { ok: true };
   }
 
+  async function editTreasuryMovement(id, updates) {
+    const fresh = (await storageGet("tesoreria")) || tesoreria;
+    const next = fresh.map((m) => (m.id === id ? { ...m, ...updates } : m));
+    setTesoreria(next);
+    const saved = await storageSetVerified("tesoreria", next);
+    if (!saved) return { ok: false, msg: "No se pudo guardar la corrección. Probá de nuevo." };
+    showToast("Movimiento corregido");
+    return { ok: true };
+  }
+
   async function removeTreasuryMovement(id) {
     const fresh = (await storageGet("tesoreria")) || tesoreria;
     const next = fresh.filter((m) => m.id !== id);
@@ -1137,6 +1147,7 @@ function GolfLeagueInner() {
             participantNames={acceptedParticipantNames}
             onAdd={addTreasuryMovement}
             onGenerateCuota={generateCuotaBatch}
+            onEdit={editTreasuryMovement}
             onRemove={removeTreasuryMovement}
             onRemoveBatch={removeTreasuryBatch}
             onExport={exportTreasuryCSV}
@@ -2484,14 +2495,24 @@ function computeBalances(movements, participantNames) {
     .sort((a, b) => b.saldo - a.saldo);
 }
 
-function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGenerateCuota, onRemove, onRemoveBatch, onExport, onClose }) {
+function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGenerateCuota, onEdit, onRemove, onRemoveBatch, onExport, onClose }) {
   const [subTab, setSubTab] = useState("situacion");
+  const [historialInitialFilter, setHistorialInitialFilter] = useState("");
 
   const totalCobranzas = movements.filter((m) => m.type === "cobranza").reduce((a, m) => a + Number(m.amount || 0), 0);
   const totalEgresos = movements.filter((m) => m.type === "egreso").reduce((a, m) => a + Number(m.amount || 0), 0);
   const saldoCaja = totalCobranzas - totalEgresos;
 
   const balances = useMemo(() => computeBalances(movements, participantNames), [movements, participantNames]);
+  const totalDeudaPendiente = useMemo(
+    () => balances.reduce((acc, b) => acc + Math.max(b.saldo, 0), 0),
+    [balances]
+  );
+
+  function goToHistorialFiltered(type) {
+    setHistorialInitialFilter(type);
+    setSubTab("historial");
+  }
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }} onClick={onClose}>
@@ -2504,22 +2525,39 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
           {tournament}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-          <div style={{ flex: 1, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+          <button
+            onClick={() => goToHistorialFiltered("cobranza")}
+            className="glBtn"
+            style={{ flex: 1, minWidth: 100, textAlign: "left", background: COLORS.paperDim, border: "none", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}
+          >
             <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Cobrado</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.green700 }}>{fmtMoney(totalCobranzas)}</div>
-          </div>
-          <div style={{ flex: 1, background: COLORS.paperDim, borderRadius: 10, padding: "10px 12px" }}>
+          </button>
+          <button
+            onClick={() => goToHistorialFiltered("egreso")}
+            className="glBtn"
+            style={{ flex: 1, minWidth: 100, textAlign: "left", background: COLORS.paperDim, border: "none", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}
+          >
             <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.6, fontFamily: "'IBM Plex Mono', monospace" }}>Egresos</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.danger }}>{fmtMoney(totalEgresos)}</div>
-          </div>
-          <div style={{ flex: 1, background: COLORS.green700, borderRadius: 10, padding: "10px 12px" }}>
+          </button>
+          <div style={{ flex: 1, minWidth: 100, background: COLORS.green700, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.paper, fontFamily: "'IBM Plex Mono', monospace" }}>Saldo en caja</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.paper }}>{fmtMoney(saldoCaja)}</div>
           </div>
+          <button
+            onClick={() => setSubTab("situacion")}
+            className="glBtn"
+            style={{ flex: 1, minWidth: 100, textAlign: "left", background: COLORS.brass, border: "none", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}
+          >
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", opacity: 0.75, color: COLORS.green900, fontFamily: "'IBM Plex Mono', monospace" }}>Saldos (deuda total)</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.green900 }}>{fmtMoney(totalDeudaPendiente)}</div>
+          </button>
         </div>
         <p style={{ fontSize: 10.5, color: "rgba(27,36,32,0.45)", margin: "0 0 14px" }}>
-          "Saldo en caja" es plata real (lo cobrado menos lo gastado). No incluye cuotas generadas y todavía no pagadas — eso está en el Cuadro de situación.
+          "Saldo en caja" es plata real (lo cobrado menos lo gastado). "Saldos" es lo que todavía te deben —
+          tocá cualquiera de estos cuatro para ir directo al detalle.
         </p>
 
         <TreasurySubTabs tab={subTab} setTab={setSubTab} />
@@ -2533,7 +2571,14 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
           />
         )}
         {subTab === "historial" && (
-          <TreasuryHistorial movements={movements} onRemove={onRemove} onRemoveBatch={onRemoveBatch} onExport={onExport} />
+          <TreasuryHistorial
+            movements={movements}
+            initialFilterType={historialInitialFilter}
+            onEdit={onEdit}
+            onRemove={onRemove}
+            onRemoveBatch={onRemoveBatch}
+            onExport={onExport}
+          />
         )}
 
         <button onClick={onClose} style={{ marginTop: 18, width: "100%", background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "10px 0", fontWeight: 600, cursor: "pointer" }}>
@@ -2757,10 +2802,9 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
   );
 }
 
-function TreasuryHistorial({ movements, onRemove, onRemoveBatch, onExport }) {
+function TreasuryHistorial({ movements, initialFilterType, onEdit, onRemove, onRemoveBatch, onExport }) {
   const [filterMember, setFilterMember] = useState("");
-  const [filterType, setFilterType] = useState("");
-  const [deleting, setDeleting] = useState(null);
+  const [filterType, setFilterType] = useState(initialFilterType || "");
 
   const memberOptions = useMemo(
     () => Array.from(new Set(movements.filter((m) => m.member).map((m) => m.member))).sort(),
@@ -2808,54 +2852,16 @@ function TreasuryHistorial({ movements, onRemove, onRemoveBatch, onExport }) {
       ) : (
         <div>
           {sorted.map((m, idx) => (
-            <div key={m.id} style={{ borderBottom: idx < sorted.length - 1 ? `1px solid ${COLORS.paperDim}` : "none", padding: "10px 0" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>
-                    {m.concept}
-                    {m.member && <span style={{ fontWeight: 400, opacity: 0.7 }}> · {m.member}</span>}
-                  </div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: typeColor[m.type], textTransform: "uppercase" }}>
-                    {typeLabel[m.type]}
-                  </div>
-                  <div style={{ fontSize: 11, opacity: 0.55 }}>
-                    {formatDate(m.date)}{m.category ? ` · ${m.category}` : ""}{m.registeredBy ? ` · ${m.registeredBy}` : ""}
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color: m.type === "cobranza" ? COLORS.green700 : m.type === "egreso" ? COLORS.danger : COLORS.brass }}>
-                    {fmtMoney(m.amount)}
-                  </div>
-                  <button onClick={() => setDeleting(deleting === m.id ? null : m.id)} style={{ background: "none", border: "none", color: "rgba(140,59,46,0.7)", cursor: "pointer" }}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-              {deleting === m.id && (
-                <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    onClick={() => { onRemove(m.id); setDeleting(null); }}
-                    style={{ flex: 1, background: COLORS.danger, color: "#fff", border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
-                  >
-                    Borrar solo esta
-                  </button>
-                  {m.type === "cuota" && m.batchId && (
-                    <button
-                      onClick={() => { onRemoveBatch(m.batchId); setDeleting(null); }}
-                      style={{ flex: 1, background: "none", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
-                    >
-                      Borrar toda la tanda
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setDeleting(null)}
-                    style={{ flex: 1, background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 6, padding: "7px 0", fontSize: 12, cursor: "pointer" }}
-                  >
-                    Cancelar
-                  </button>
-                </div>
-              )}
-            </div>
+            <TreasuryMovementRow
+              key={m.id}
+              movement={m}
+              isLast={idx === sorted.length - 1}
+              typeLabel={typeLabel}
+              typeColor={typeColor}
+              onEdit={onEdit}
+              onRemove={onRemove}
+              onRemoveBatch={onRemoveBatch}
+            />
           ))}
         </div>
       )}
@@ -2863,6 +2869,132 @@ function TreasuryHistorial({ movements, onRemove, onRemoveBatch, onExport }) {
   );
 }
 
+function TreasuryMovementRow({ movement: m, isLast, typeLabel, typeColor, onEdit, onRemove, onRemoveBatch }) {
+  const [deleting, setDeleting] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editConcept, setEditConcept] = useState(m.concept);
+  const [editAmount, setEditAmount] = useState(String(m.amount));
+  const [editDate, setEditDate] = useState(m.date);
+  const [editCategory, setEditCategory] = useState(m.category || "");
+  const [editError, setEditError] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+
+  async function confirmEdit() {
+    setEditError("");
+    if (!editConcept.trim()) return setEditError("Ingresá un concepto.");
+    const amountNum = Number(editAmount);
+    if (!editAmount || isNaN(amountNum) || amountNum <= 0) return setEditError("Ingresá un monto válido.");
+    if (!editDate) return setEditError("Ingresá una fecha.");
+    setEditBusy(true);
+    const updates = { concept: editConcept.trim(), amount: amountNum, date: editDate };
+    if (m.type !== "cuota") updates.category = editCategory;
+    const res = await onEdit(m.id, updates);
+    setEditBusy(false);
+    if (!res.ok) return setEditError(res.msg);
+    setEditing(false);
+  }
+
+  return (
+    <div style={{ borderBottom: isLast ? "none" : `1px solid ${COLORS.paperDim}`, padding: "10px 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+            {m.concept}
+            {m.member && <span style={{ fontWeight: 400, opacity: 0.7 }}> · {m.member}</span>}
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: typeColor[m.type], textTransform: "uppercase" }}>
+            {typeLabel[m.type]}
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.55 }}>
+            {formatDate(m.date)}{m.category ? ` · ${m.category}` : ""}{m.registeredBy ? ` · ${m.registeredBy}` : ""}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14, color: m.type === "cobranza" ? COLORS.green700 : m.type === "egreso" ? COLORS.danger : COLORS.brass }}>
+            {fmtMoney(m.amount)}
+          </div>
+          <button
+            onClick={() => { setEditing((v) => !v); setEditError(""); setDeleting(false); }}
+            aria-label="Corregir movimiento"
+            title="Corregir concepto, monto o fecha"
+            style={{ background: "none", border: "none", color: COLORS.brass, cursor: "pointer", padding: 4, display: "flex" }}
+          >
+            <Pencil size={14} />
+          </button>
+          <button onClick={() => { setDeleting((v) => !v); setEditing(false); }} style={{ background: "none", border: "none", color: "rgba(140,59,46,0.7)", cursor: "pointer" }}>
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+
+      {editing && (
+        <div style={{ marginTop: 10, background: COLORS.paperDim, borderRadius: 8, padding: 12 }}>
+          <FieldLabel style={{ marginBottom: 4 }}>Concepto</FieldLabel>
+          <input value={editConcept} onChange={(e) => setEditConcept(e.target.value)} style={{ ...inputStyle, marginBottom: 8 }} />
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 100 }}>
+              <FieldLabel style={{ marginBottom: 4 }}>Monto</FieldLabel>
+              <input type="number" inputMode="decimal" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} style={inputStyle} />
+            </div>
+            <div style={{ flex: 1, minWidth: 130 }}>
+              <FieldLabel style={{ marginBottom: 4 }}>Fecha</FieldLabel>
+              <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} style={inputStyle} />
+            </div>
+          </div>
+          {m.type !== "cuota" && (
+            <>
+              <FieldLabel style={{ marginBottom: 4 }}>Categoría</FieldLabel>
+              <Select value={editCategory} onChange={setEditCategory} placeholder="Elegí">
+                {(TREASURY_CATEGORIES[m.type] || []).map((c) => <option key={c} value={c}>{c}</option>)}
+              </Select>
+            </>
+          )}
+          {editError && <p style={{ color: COLORS.danger, fontSize: 12, margin: "8px 0 0" }}>{editError}</p>}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button
+              onClick={confirmEdit}
+              disabled={editBusy}
+              style={{ flex: 1, background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 6, padding: "8px 0", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+            >
+              Guardar cambios
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              style={{ flex: 1, background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 6, padding: "8px 0", fontSize: 12.5, cursor: "pointer" }}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleting && (
+        <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            onClick={() => { onRemove(m.id); setDeleting(false); }}
+            style={{ flex: 1, background: COLORS.danger, color: "#fff", border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+          >
+            Borrar solo esta
+          </button>
+          {m.type === "cuota" && m.batchId && (
+            <button
+              onClick={() => { onRemoveBatch(m.batchId); setDeleting(false); }}
+              style={{ flex: 1, background: "none", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+            >
+              Borrar toda la tanda
+            </button>
+          )}
+          <button
+            onClick={() => setDeleting(false)}
+            style={{ flex: 1, background: "none", border: `1px solid ${COLORS.paperDim}`, borderRadius: 6, padding: "7px 0", fontSize: 12, cursor: "pointer" }}
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AdminGate({ hasAdminPin, authed, onSetupPin, onVerifyPin, onClose, children }) {
   const [pin, setPin] = useState("");
