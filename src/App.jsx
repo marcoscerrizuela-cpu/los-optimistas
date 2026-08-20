@@ -2556,13 +2556,14 @@ function generateTreasuryPDF(tournament, balances, totals) {
   doc.text("Resumen", 14, 50);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
-  doc.text(`Cobrado: ${fmtMoney(totals.cobranzas)}`, 14, 58);
-  doc.text(`Egresos: ${fmtMoney(totals.egresos)}`, 14, 65);
-  doc.text(`Saldo en caja: ${fmtMoney(totals.saldoCaja)}`, 14, 72);
-  doc.text(`Deuda total pendiente: ${fmtMoney(totals.deuda)}`, 14, 79);
+  doc.text(`Saldo anterior del fondo común: ${fmtMoney(totals.fondoComun)}`, 14, 58);
+  doc.text(`Cobrado: ${fmtMoney(totals.cobranzas)}`, 14, 65);
+  doc.text(`Egresos: ${fmtMoney(totals.egresos)}`, 14, 72);
+  doc.text(`Saldo en caja: ${fmtMoney(totals.saldoCaja)}`, 14, 79);
+  doc.text(`Deuda total pendiente: ${fmtMoney(totals.deuda)}`, 14, 86);
 
   autoTable(doc, {
-    startY: 88,
+    startY: 95,
     head: [["#", "Jugador", "Cuotas generadas", "Pagado", "Saldo", "Estado"]],
     body: balances.map((b, idx) => [
       idx + 1,
@@ -2642,6 +2643,9 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
   const totalCobranzas = movements.filter((m) => m.type === "cobranza").reduce((a, m) => a + Number(m.amount || 0), 0);
   const totalEgresos = movements.filter((m) => m.type === "egreso").reduce((a, m) => a + Number(m.amount || 0), 0);
   const saldoCaja = totalCobranzas - totalEgresos;
+  const totalFondoComun = movements
+    .filter((m) => m.type === "cobranza" && m.member === FONDO_COMUN)
+    .reduce((a, m) => a + Number(m.amount || 0), 0);
 
   const balances = useMemo(() => computeBalances(movements, participantNames), [movements, participantNames]);
   const totalDeudaPendiente = useMemo(
@@ -2703,6 +2707,7 @@ function TreasuryPanel({ movements, tournament, participantNames, onAdd, onGener
         <button
           onClick={() =>
             generateTreasuryPDF(tournament, balances, {
+              fondoComun: totalFondoComun,
               cobranzas: totalCobranzas,
               egresos: totalEgresos,
               saldoCaja,
