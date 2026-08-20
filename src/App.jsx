@@ -2949,6 +2949,22 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
   const [cuotaConfirming, setCuotaConfirming] = useState(false);
   const [cuotaError, setCuotaError] = useState("");
   const [cuotaBusy, setCuotaBusy] = useState(false);
+  const [selectedMembers, setSelectedMembers] = useState(() => new Set(participantNames));
+
+  // si cambia la lista de aceptados (alguien nuevo entra, u otro sale), la selección
+  // se reinicia a "todos" — evita quedarse con nombres de gente que ya no está.
+  useEffect(() => {
+    setSelectedMembers(new Set(participantNames));
+  }, [participantNames]);
+
+  function toggleMember(name) {
+    setSelectedMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
 
   function handleTypeChange(t) {
     setType(t);
@@ -2979,8 +2995,10 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
     if (!cuotaConcept.trim()) return setCuotaError("Ingresá un concepto (ej: cuota agosto).");
     const amountNum = Number(cuotaAmount);
     if (!cuotaAmount || isNaN(amountNum) || amountNum <= 0) return setCuotaError("Ingresá un monto válido.");
+    const targetMembers = participantNames.filter((n) => selectedMembers.has(n));
+    if (targetMembers.length === 0) return setCuotaError("Tildá al menos un jugador.");
     setCuotaBusy(true);
-    const res = await onGenerateCuota(cuotaConcept.trim(), amountNum, cuotaDate, participantNames);
+    const res = await onGenerateCuota(cuotaConcept.trim(), amountNum, cuotaDate, targetMembers);
     setCuotaBusy(false);
     if (!res.ok) return setCuotaError(res.msg);
     setCuotaConcept("");
@@ -3061,7 +3079,8 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
       <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px dashed ${COLORS.paperDim}` }}>
         <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 15, margin: "0 0 6px" }}>Generación de cuotas</h3>
         <p style={{ fontSize: 11.5, color: "rgba(27,36,32,0.55)", margin: "0 0 10px" }}>
-          Genera esta deuda para TODOS los {participantNames.length} jugador(es) aceptados al torneo activo, de una sola vez.
+          Genera esta deuda para los jugadores que tildes abajo — por defecto están todos, destildá a quien
+          no corresponda (por ejemplo, alguien que se sumó después de la cuota anterior y ya la tiene puesta al día).
         </p>
         <FieldLabel style={{ marginBottom: 4 }}>Concepto</FieldLabel>
         <input value={cuotaConcept} onChange={(e) => setCuotaConcept(e.target.value)} placeholder="Ej: cuota agosto 2026" style={{ ...inputStyle, marginBottom: 10 }} />
@@ -3075,14 +3094,39 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
             <input type="date" value={cuotaDate} onChange={(e) => setCuotaDate(e.target.value)} style={inputStyle} />
           </div>
         </div>
+
+        {participantNames.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <FieldLabel style={{ marginBottom: 0 }}>A quiénes ({selectedMembers.size} de {participantNames.length})</FieldLabel>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setSelectedMembers(new Set(participantNames))} style={{ background: "none", border: "none", color: COLORS.green700, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  Todos
+                </button>
+                <button onClick={() => setSelectedMembers(new Set())} style={{ background: "none", border: "none", color: COLORS.danger, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  Ninguno
+                </button>
+              </div>
+            </div>
+            <div style={{ maxHeight: 160, overflowY: "auto", border: `1px solid ${COLORS.paperDim}`, borderRadius: 8, padding: "6px 10px" }}>
+              {participantNames.map((n) => (
+                <label key={n} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={selectedMembers.has(n)} onChange={() => toggleMember(n)} />
+                  {n}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
         {cuotaError && <p style={{ color: COLORS.danger, fontSize: 12.5, margin: "0 0 10px" }}>{cuotaError}</p>}
         {!cuotaConfirming ? (
           <button
             onClick={() => setCuotaConfirming(true)}
-            disabled={participantNames.length === 0}
-            style={{ width: "100%", background: "none", border: `1px dashed ${COLORS.green700}`, color: COLORS.green700, borderRadius: 8, padding: "11px 0", fontWeight: 700, cursor: participantNames.length === 0 ? "not-allowed" : "pointer", fontSize: 13, opacity: participantNames.length === 0 ? 0.5 : 1 }}
+            disabled={selectedMembers.size === 0}
+            style={{ width: "100%", background: "none", border: `1px dashed ${COLORS.green700}`, color: COLORS.green700, borderRadius: 8, padding: "11px 0", fontWeight: 700, cursor: selectedMembers.size === 0 ? "not-allowed" : "pointer", fontSize: 13, opacity: selectedMembers.size === 0 ? 0.5 : 1 }}
           >
-            Aplicar a los {participantNames.length} jugador(es) del torneo
+            Aplicar a {selectedMembers.size} jugador(es) seleccionado(s)
           </button>
         ) : (
           <div style={{ display: "flex", gap: 8 }}>
@@ -3091,7 +3135,7 @@ function TreasuryCargar({ participantNames, onAdd, onGenerateCuota }) {
               disabled={cuotaBusy}
               style={{ flex: 1, background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 8, padding: "11px 0", fontWeight: 700, cursor: "pointer", fontSize: 13 }}
             >
-              Confirmar para los {participantNames.length} jugador(es)
+              Confirmar para {selectedMembers.size} jugador(es)
             </button>
             <button
               onClick={() => setCuotaConfirming(false)}
