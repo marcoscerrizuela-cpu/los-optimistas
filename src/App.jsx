@@ -139,6 +139,21 @@ async function storageSetVerified(key, value) {
   return JSON.stringify(check) === JSON.stringify(value);
 }
 
+// Variante para "tesoreria": esa clave vive en su propia pestaña de filas en
+// Apps Script, no como texto JSON en la KV — el backend reconstruye cada
+// movimiento desde una fila, con otro orden de propiedades. Comparar el texto
+// exacto (JSON.stringify) fallaría siempre aunque el guardado esté bien, así
+// que acá se verifica que estén todos los IDs esperados, no el texto letra por letra.
+async function storageSetVerifiedByIds(key, value) {
+  const ok = await storageSet(key, value);
+  if (!ok) return false;
+  const check = await storageGet(key);
+  if (!Array.isArray(check) || !Array.isArray(value)) return false;
+  if (check.length !== value.length) return false;
+  const idsCheck = new Set(check.map((x) => x.id));
+  return value.every((x) => idsCheck.has(x.id));
+}
+
 async function storageDelete(key) {
   // las claves de foto (photo:ID) necesitan borrar también el archivo real en
   // Drive, no solo la fila de la hoja — si no, quedan archivos huérfanos.
@@ -799,7 +814,7 @@ function GolfLeagueInner() {
     const record = { ...entry, id: uid(), tournament };
     const next = [...fresh, record];
     setTesoreria(next);
-    const saved = await storageSetVerified("tesoreria", next);
+    const saved = await storageSetVerifiedByIds("tesoreria", next);
     if (!saved) return { ok: false, msg: "No se pudo guardar. Probá de nuevo." };
     showToast(entry.type === "cobranza" ? "Cobranza registrada" : "Egreso registrado");
     return { ok: true };
@@ -825,7 +840,7 @@ function GolfLeagueInner() {
     }));
     const next = [...fresh, ...newRecords];
     setTesoreria(next);
-    const saved = await storageSetVerified("tesoreria", next);
+    const saved = await storageSetVerifiedByIds("tesoreria", next);
     if (!saved) return { ok: false, msg: "No se pudo generar la cuota. Probá de nuevo." };
     showToast(`Cuota "${concept}" generada para ${memberNames.length} jugador(es)`);
     return { ok: true };
