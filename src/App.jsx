@@ -3011,6 +3011,26 @@ function BilleteraPublica({ movements, participantNames, tournament }) {
           </div>
         </div>
 
+        <button
+          onClick={() =>
+            generateTreasuryPDF(tournament, balances, {
+              fondoComun: movements.filter((m) => m.type === "cobranza" && m.member === FONDO_COMUN).reduce((a, m) => a + Number(m.amount || 0), 0),
+              cobranzas: totalCobranzas,
+              egresos: totalEgresos,
+              saldoCaja,
+              deuda: totalDeudaPendiente,
+            })
+          }
+          className="glBtn"
+          style={{
+            width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            background: COLORS.green700, color: COLORS.paper, border: "none", borderRadius: 8,
+            padding: "11px 0", fontWeight: 700, cursor: "pointer", fontSize: 13, marginBottom: 16,
+          }}
+        >
+          <FileText size={15} /> Exportar Cuadro de situación (PDF)
+        </button>
+
         {detailType ? (
           <BilleteraDetalle movements={movements} type={detailType} onBack={() => setDetailType(null)} />
         ) : (
